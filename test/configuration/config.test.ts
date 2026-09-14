@@ -23,12 +23,14 @@ function config(root: string): OrchestratorConfig {
         command: process.execPath,
         args: [],
         model: "implementation-model",
+        shellAllow: [],
       },
       review: {
         adapter: "antigravity",
         command: process.execPath,
         args: [],
         model: "review-model",
+        shellAllow: [],
       },
     },
     routing: {

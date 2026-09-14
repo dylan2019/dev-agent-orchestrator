@@ -3,7 +3,11 @@ import fs from "node:fs";
 import path from "node:path";
 
 import type { ProjectProfile } from "../../configuration/schema.js";
-import { normalizeAuthorizedPath } from "../../domain/scope.js";
+import {
+  normalizeAuthorizedPath,
+  normalizeAuthorizedPaths,
+  pathIsCovered,
+} from "../../domain/scope.js";
 import type {
   CandidateFilePatch,
   CandidateInspection,
@@ -272,6 +276,28 @@ export class GitCandidateRepository implements CandidateRepository {
     }
     const truncated = tracked.stdoutTruncated || patch.length > maxChars;
     return { ...inspection, patch: truncated ? patch.slice(0, maxChars) : patch, truncated };
+  }
+
+  public async hashRelevantPaths(worktreePath: string, paths?: readonly string[]): Promise<string> {
+    const inspection = await this.inspect(worktreePath);
+    const selectors = paths ? normalizeAuthorizedPaths(paths) : undefined;
+    const files = selectors
+      ? inspection.changedFiles.filter((file) => pathIsCovered(file, selectors))
+      : inspection.changedFiles;
+    const hash = crypto.createHash("sha256");
+    hash.update("dev-agent-gate-input-v1\0");
+    hash.update(inspection.baseCommit);
+    hash.update(`\0selectors:${selectors?.join("\0") ?? "all"}\0`);
+    for (const file of files) {
+      hash.update(`path:${file}\0`);
+      const absolute = path.resolve(worktreePath, file);
+      if (!fs.existsSync(absolute)) {
+        hash.update("deleted\0");
+      } else {
+        await hashFile(hash, absolute);
+      }
+    }
+    return hash.digest("hex");
   }
 
   public async getFilePatch(

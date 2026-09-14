@@ -22,6 +22,11 @@ const WorkerSchema = CommandSchema.extend({
   adapter: z.enum(WORKER_ADAPTERS),
   model: z.string().min(1),
   reasoningEffort: z.string().min(1).optional(),
+  provider: z.string().min(1).optional(),
+  shellAllow: z
+    .array(z.string().regex(/^Shell\([^\r\n]{1,200}\)$/))
+    .max(100)
+    .default([]),
 }).strict();
 const GateSchema = CommandSchema.extend({
   id: StableIdSchema,
@@ -55,6 +60,7 @@ const ProjectSchema = z
     targetBranch: z.string().min(1).max(255),
     worktreeRoot: AbsolutePathSchema,
     instructionFiles: z.array(z.string().min(1)).default([]),
+    adapterProjectIds: z.partialRecord(z.enum(WORKER_ADAPTERS), z.string().min(1)).optional(),
     gates: z
       .object({
         affected: z.array(GateSchema).min(1),
@@ -137,6 +143,7 @@ export const OrchestratorConfigSchema = z
     for (const [projectId, project] of Object.entries(config.projects)) {
       const gates = [...project.gates.affected, project.gates.acceptance];
       const ids = new Set(gates.map((gate) => gate.id));
+      const affectedIds = new Set(project.gates.affected.map((gate) => gate.id));
       if (ids.size !== gates.length) {
         context.addIssue({
           code: "custom",
@@ -153,6 +160,15 @@ export const OrchestratorConfigSchema = z
               message: "Gate dependency is invalid",
             });
           }
+        }
+      }
+      for (const gate of project.gates.affected) {
+        if (gate.dependsOn.some((dependency) => !affectedIds.has(dependency))) {
+          context.addIssue({
+            code: "custom",
+            path: ["projects", projectId, "gates", gate.id, "dependsOn"],
+            message: "Affected Gates may depend only on other affected Gates",
+          });
         }
       }
       if (gateGraphHasCycle(gates)) {

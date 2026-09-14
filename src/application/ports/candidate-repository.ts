@@ -38,6 +38,7 @@ export interface CandidateRepository {
   inspectProject(project: ProjectProfile): Promise<ProjectGitState>;
   createWorktree(project: ProjectProfile, taskId: string, baseCommit: string): Promise<string>;
   inspect(worktreePath: string): Promise<CandidateInspection>;
+  hashRelevantPaths(worktreePath: string, paths?: readonly string[]): Promise<string>;
   getPatch(worktreePath: string, maxChars: number): Promise<CandidatePatch>;
   getFilePatch(worktreePath: string, file: string, maxChars: number): Promise<CandidateFilePatch>;
   removeWorktree(
