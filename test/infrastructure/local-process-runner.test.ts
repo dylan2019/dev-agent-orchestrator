@@ -56,3 +56,20 @@ void test("local process runner rejects shell-relative and batch commands", asyn
       error instanceof OrchestratorError && error.code === "BATCH_COMMAND_UNSUPPORTED",
   );
 });
+
+void test("local process runner terminates unbounded total output", async () => {
+  const runner = new LocalProcessRunner();
+  const result = await runner.run(
+    process.execPath,
+    ["-e", 'setInterval(() => process.stdout.write("x".repeat(2048)), 1)'],
+    {
+      cwd: os.tmpdir(),
+      timeoutMs: 10_000,
+      maxCaptureBytes: 512,
+      maxTotalOutputBytes: 4_096,
+    },
+  );
+  assert.equal(result.outputLimitExceeded, true);
+  assert.notEqual(result.exitCode, 0);
+  assert.equal(Buffer.byteLength(result.stdout) <= 512, true);
+});

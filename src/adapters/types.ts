@@ -19,6 +19,7 @@ export interface WorkerExecutionRequest {
   readonly signal?: AbortSignal;
   readonly onProcessSpawn?: (pid: number) => void | Promise<void>;
   readonly onProcessExit?: (pid: number) => void | Promise<void>;
+  readonly onStdoutActivity?: (chunk: Buffer) => void;
 }
 
 export interface ReviewExecutionRequest extends WorkerExecutionRequest {

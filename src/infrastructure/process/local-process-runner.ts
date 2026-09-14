@@ -117,6 +117,12 @@ export class LocalProcessRunner implements ProcessRunner {
     if (!Number.isInteger(options.maxCaptureBytes) || options.maxCaptureBytes < 1) {
       throw new OrchestratorError("INVALID_CAPTURE_LIMIT", "Process capture limit is invalid");
     }
+    if (
+      options.maxTotalOutputBytes !== undefined &&
+      (!Number.isInteger(options.maxTotalOutputBytes) || options.maxTotalOutputBytes < 1)
+    ) {
+      throw new OrchestratorError("INVALID_OUTPUT_LIMIT", "Process total output limit is invalid");
+    }
     const invocation = resolveInvocation(command, args);
     const startedAt = Date.now();
     let stdout: BoundedCapture = { chunks: [], retainedBytes: 0 };
@@ -125,6 +131,7 @@ export class LocalProcessRunner implements ProcessRunner {
     let stderrBytes = 0;
     let timedOut = false;
     let cancelled = false;
+    let outputLimitExceeded = false;
 
     return await new Promise<ProcessRunResult>((resolve, reject) => {
       let settled = false;
@@ -204,6 +211,15 @@ export class LocalProcessRunner implements ProcessRunner {
           options.captureMode ?? "tail",
         );
         options.onStdout?.(chunk);
+        if (
+          options.maxTotalOutputBytes !== undefined &&
+          !outputLimitExceeded &&
+          stdoutBytes + stderrBytes > options.maxTotalOutputBytes &&
+          child.pid !== undefined
+        ) {
+          outputLimitExceeded = true;
+          terminateProcessTree(child.pid);
+        }
       });
       child.stderr.on("data", (chunk: Buffer) => {
         stderrBytes += chunk.length;
@@ -214,6 +230,15 @@ export class LocalProcessRunner implements ProcessRunner {
           options.captureMode ?? "tail",
         );
         options.onStderr?.(chunk);
+        if (
+          options.maxTotalOutputBytes !== undefined &&
+          !outputLimitExceeded &&
+          stdoutBytes + stderrBytes > options.maxTotalOutputBytes &&
+          child.pid !== undefined
+        ) {
+          outputLimitExceeded = true;
+          terminateProcessTree(child.pid);
+        }
       });
       child.once("close", (code) => {
         if (settled) {
@@ -240,6 +265,7 @@ export class LocalProcessRunner implements ProcessRunner {
               stderrTruncated: stderrBytes > stderr.retainedBytes,
               timedOut,
               cancelled,
+              ...(outputLimitExceeded ? { outputLimitExceeded: true } : {}),
               durationMs: Date.now() - startedAt,
             });
           })

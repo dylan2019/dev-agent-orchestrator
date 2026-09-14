@@ -17,12 +17,14 @@ import {
 import type { ExternalBlock, TaskAggregate, TransitionResult } from "../domain/types.js";
 import type { WorkerAdapterRegistry } from "../adapters/registry.js";
 import type { ConfigFileRepository } from "../configuration/file-repository.js";
+import type { WorkerExecutionResult } from "../adapters/types.js";
 import type { CandidateRepository } from "./ports/candidate-repository.js";
 import type { ProcessSupervisor } from "./ports/process-supervisor.js";
 import type { TaskStore } from "./ports/task-store.js";
 import type { GateExecutor } from "./gate-executor.js";
 import { assertExecutionBinding } from "./execution-profile.js";
 import type { EventLogger } from "./ports/event-logger.js";
+import { startCandidateProgressWatchdog } from "./candidate-progress-watchdog.js";
 import { OrchestratorError } from "../shared/errors.js";
 
 function now(): string {
@@ -124,17 +126,36 @@ export class TaskExecutionService {
     });
     try {
       const hooks = this.supervisor.workerHooks(task.id);
-      const result = await this.adapters.get(binding.implementationWorker.adapter).implement({
-        task,
-        project: binding.project,
-        profile: binding.implementationWorker,
+      const progress = await startCandidateProgressWatchdog(
+        this.candidates,
         worktreePath,
-        runtimeDirectory,
-        timeoutMs: task.budget.maxWallClockMinutes * 60_000,
-        maxCaptureBytes: task.budget.maxCapturedBytes,
-        onProcessSpawn: hooks.onSpawn,
-        onProcessExit: hooks.onExit,
-      });
+        task.budget.maxNoCandidateChangeMinutes * 60_000,
+      );
+      let result: WorkerExecutionResult;
+      try {
+        result = await this.adapters.get(binding.implementationWorker.adapter).implement({
+          task,
+          project: binding.project,
+          profile: binding.implementationWorker,
+          worktreePath,
+          runtimeDirectory,
+          timeoutMs: task.budget.maxWallClockMinutes * 60_000,
+          maxCaptureBytes: task.budget.maxCapturedBytes,
+          signal: progress.signal,
+          onProcessSpawn: hooks.onSpawn,
+          onProcessExit: hooks.onExit,
+        });
+      } catch (error) {
+        if (progress.reason()) {
+          throw new OrchestratorError(
+            "SEMANTIC_STALL",
+            progress.reason() ?? "Candidate made no progress",
+          );
+        }
+        throw error;
+      } finally {
+        progress.stop();
+      }
       this.logger.write({
         level: "info",
         event: "worker.finished",
@@ -365,9 +386,11 @@ export class TaskExecutionService {
         ? "provider_capacity"
         : code.includes("SETUP")
           ? "environment_unavailable"
-          : code.includes("TIMEOUT") || code.includes("PROCESS")
-            ? "process_lost"
-            : undefined;
+          : code.includes("SEMANTIC_STALL") || code.includes("OUTPUT_LIMIT")
+            ? "semantic_stall"
+            : code.includes("TIMEOUT") || code.includes("PROCESS")
+              ? "process_lost"
+              : undefined;
     if (externalReason) {
       return this.persistExternalBlock(current, {
         reason: externalReason,

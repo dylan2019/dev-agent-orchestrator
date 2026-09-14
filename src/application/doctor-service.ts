@@ -77,7 +77,11 @@ export class DoctorService {
           subject: id,
         });
       }
-      for (const gate of [...project.gates.affected, project.gates.acceptance]) {
+      for (const gate of [
+        ...(project.gates.setup ?? []),
+        ...project.gates.affected,
+        project.gates.acceptance,
+      ]) {
         if (!fs.existsSync(gate.command)) {
           issues.push({
             severity: "error",

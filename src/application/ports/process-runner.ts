@@ -3,6 +3,7 @@ export interface ProcessRunOptions {
   readonly timeoutMs: number;
   readonly maxCaptureBytes: number;
   readonly captureMode?: "head" | "tail";
+  readonly maxTotalOutputBytes?: number;
   readonly env?: NodeJS.ProcessEnv;
   readonly stdin?: string | Buffer;
   readonly signal?: AbortSignal;
@@ -22,6 +23,7 @@ export interface ProcessRunResult {
   readonly stderrTruncated: boolean;
   readonly timedOut: boolean;
   readonly cancelled: boolean;
+  readonly outputLimitExceeded?: boolean;
   readonly durationMs: number;
 }
 

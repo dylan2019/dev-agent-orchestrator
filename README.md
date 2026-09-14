@@ -59,6 +59,8 @@ dev-agent-orchestrator init /absolute/path/to/repository \
 
 `init` detects Git, Worker commands, the current target branch, an external Worktree root, project instructions, and an `acceptance-ci.ps1` or `acceptance-ci.sh` script when present. Use `--implementation-adapter` and `--review-adapter` to select other products. Non-standard Worker installations can use `--implementation-command`, `--implementation-args-json`, `--review-command`, and `--review-args-json`.
 
+For lockfile-based Node projects, `init` also creates a pre-Worker setup Gate that runs `npm ci`. Setup may create ignored runtime assets, but the orchestrator fingerprints the Git Candidate before and after every setup Gate and rejects any source change.
+
 Validate every external dependency before use:
 
 ```shell

@@ -87,10 +87,12 @@ export class CursorAdapter implements WorkerAdapter {
             cwd: request.worktreePath,
             timeoutMs: request.timeoutMs,
             maxCaptureBytes: request.maxCaptureBytes,
+            maxTotalOutputBytes: request.maxCaptureBytes,
             env: { ...process.env, CURSOR_CONFIG_DIR: path.dirname(configFile) },
             ...(request.signal ? { signal: request.signal } : {}),
             ...(request.onProcessSpawn ? { onSpawn: request.onProcessSpawn } : {}),
             ...(request.onProcessExit ? { onExit: request.onProcessExit } : {}),
+            ...(request.onStdoutActivity ? { onStdout: request.onStdoutActivity } : {}),
           },
         );
         return parseExecutionResult(this.id, result);
@@ -130,10 +132,12 @@ export class CursorAdapter implements WorkerAdapter {
             cwd: request.worktreePath,
             timeoutMs: request.timeoutMs,
             maxCaptureBytes: request.maxCaptureBytes,
+            maxTotalOutputBytes: request.maxCaptureBytes,
             env: { ...process.env, CURSOR_CONFIG_DIR: path.dirname(configFile) },
             ...(request.signal ? { signal: request.signal } : {}),
             ...(request.onProcessSpawn ? { onSpawn: request.onProcessSpawn } : {}),
             ...(request.onProcessExit ? { onExit: request.onProcessExit } : {}),
+            ...(request.onStdoutActivity ? { onStdout: request.onStdoutActivity } : {}),
           },
         );
         return parseReviewResult(this.id, result);

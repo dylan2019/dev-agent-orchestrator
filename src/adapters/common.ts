@@ -170,6 +170,9 @@ export function parseExecutionResult(
   if (processResult.cancelled) {
     throw new OrchestratorError("WORKER_CANCELLED", "Worker execution was cancelled");
   }
+  if (processResult.outputLimitExceeded) {
+    throw new OrchestratorError("WORKER_OUTPUT_LIMIT", "Worker exceeded its output budget");
+  }
   const records = parseJsonLines(processResult.stdout);
   const final = [...records].reverse().find((record) => {
     const type = lowerToken(record.type ?? record.event);
