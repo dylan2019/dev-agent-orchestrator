@@ -269,3 +269,20 @@ void test("Adapter registry exposes exactly four supported products", () => {
     .sort();
   assert.deepEqual(ids, ["antigravity", "cursor", "workbuddy", "zcode"]);
 });
+
+void test("Worker probe accepts CLI help emitted on stderr", async () => {
+  const version = result("1.2.2\n");
+  const help: ProcessRunResult = {
+    ...result(""),
+    stderr:
+      "--input-format --output-format --json-schema --project --model --dangerously-skip-permissions --add-dir",
+  };
+  const models = result("antigravity-model\n");
+  const processes = new RecordingProcessRunner([version, help, models]);
+  const probe = await new AntigravityAdapter(processes).probe(
+    worker("antigravity"),
+    project(os.tmpdir()),
+  );
+  assert.equal(probe.version, "1.2.2");
+  assert.equal(probe.modelAvailable, true);
+});

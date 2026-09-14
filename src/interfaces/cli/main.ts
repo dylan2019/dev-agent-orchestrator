@@ -195,6 +195,34 @@ function acceptanceGate(repository: string, gitCommand: string) {
   };
 }
 
+function setupGates(repository: string): readonly Record<string, unknown>[] {
+  if (!fs.existsSync(path.join(repository, "package-lock.json"))) {
+    return [];
+  }
+  const npmCliCandidates = [
+    process.env.npm_execpath,
+    path.join(path.dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js"),
+  ];
+  const npmCli = npmCliCandidates.find((candidate): candidate is string =>
+    Boolean(candidate && fs.existsSync(candidate)),
+  );
+  if (!npmCli) {
+    throw new OrchestratorError(
+      "NPM_RUNTIME_NOT_FOUND",
+      "package-lock.json exists but npm-cli.js could not be located",
+    );
+  }
+  return [
+    {
+      id: "node-dependencies",
+      command: process.execPath,
+      args: [npmCli, "ci", "--no-audit", "--no-fund"],
+      dependsOn: [],
+      timeoutMinutes: 30,
+    },
+  ];
+}
+
 async function initialize(args: ParsedArgs): Promise<void> {
   const repository = path.resolve(args.positionals[0] ?? "");
   if (!args.positionals[0] || !fs.existsSync(repository)) {
@@ -253,6 +281,7 @@ async function initialize(args: ParsedArgs): Promise<void> {
           fs.existsSync(path.join(repository, file)),
         ),
         gates: {
+          setup: setupGates(repository),
           affected: [
             {
               id: "diff-check",

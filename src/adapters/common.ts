@@ -272,7 +272,9 @@ export async function probeCli(
   if (version.exitCode !== 0 || help.exitCode !== 0 || models.exitCode !== 0) {
     throw new OrchestratorError("WORKER_PROBE_FAILED", "Worker CLI probe failed", { adapter });
   }
-  const missing = requiredFlags.filter((flag) => !help.stdout.includes(flag));
+  const helpText = `${help.stdout}\n${help.stderr}`;
+  const modelText = `${models.stdout}\n${models.stderr}`;
+  const missing = requiredFlags.filter((flag) => !helpText.includes(flag));
   if (missing.length > 0) {
     throw new OrchestratorError("WORKER_CAPABILITY_MISSING", "Worker CLI lacks required flags", {
       adapter,
@@ -290,7 +292,7 @@ export async function probeCli(
   return {
     adapter,
     version: versionValue,
-    modelAvailable: models.stdout.toLowerCase().includes(profile.model.toLowerCase()),
+    modelAvailable: modelText.toLowerCase().includes(profile.model.toLowerCase()),
     supportedFlags: requiredFlags,
   };
 }

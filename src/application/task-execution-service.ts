@@ -92,6 +92,27 @@ export class TaskExecutionService {
         "Implementation Attempt is missing",
       );
     }
+    try {
+      const scope = task.scopeGrants.at(-1);
+      if (!scope) {
+        throw new OrchestratorError("SCOPE_MISSING", "Task has no ScopeGrant");
+      }
+      const setupResults = await this.gates.runSetup(
+        task.id,
+        binding.project,
+        worktreePath,
+        scope.paths,
+      );
+      const failedSetup = setupResults.find((gate) => gate.status === "fail");
+      if (failedSetup) {
+        throw new OrchestratorError("SETUP_FAILED", "Project setup Gate failed", {
+          gateId: failedSetup.gateId,
+          errorCode: failedSetup.errorCode ?? null,
+        });
+      }
+    } catch (error) {
+      return this.handleExecutionError(task, error, "IMPLEMENTING");
+    }
     this.logger.write({
       level: "info",
       event: "worker.started",
@@ -342,9 +363,11 @@ export class TaskExecutionService {
       ? "provider_rate_limit"
       : code.includes("CAPACITY")
         ? "provider_capacity"
-        : code.includes("TIMEOUT") || code.includes("PROCESS")
-          ? "process_lost"
-          : undefined;
+        : code.includes("SETUP")
+          ? "environment_unavailable"
+          : code.includes("TIMEOUT") || code.includes("PROCESS")
+            ? "process_lost"
+            : undefined;
     if (externalReason) {
       return this.persistExternalBlock(current, {
         reason: externalReason,

@@ -63,6 +63,7 @@ const ProjectSchema = z
     adapterProjectIds: z.partialRecord(z.enum(WORKER_ADAPTERS), z.string().min(1)).optional(),
     gates: z
       .object({
+        setup: z.array(GateSchema).optional(),
         affected: z.array(GateSchema).min(1),
         acceptance: GateSchema,
       })
@@ -141,8 +142,10 @@ export const OrchestratorConfigSchema = z
       }
     }
     for (const [projectId, project] of Object.entries(config.projects)) {
-      const gates = [...project.gates.affected, project.gates.acceptance];
+      const setupGates = project.gates.setup ?? [];
+      const gates = [...setupGates, ...project.gates.affected, project.gates.acceptance];
       const ids = new Set(gates.map((gate) => gate.id));
+      const setupIds = new Set(setupGates.map((gate) => gate.id));
       const affectedIds = new Set(project.gates.affected.map((gate) => gate.id));
       if (ids.size !== gates.length) {
         context.addIssue({
@@ -150,6 +153,15 @@ export const OrchestratorConfigSchema = z
           path: ["projects", projectId, "gates"],
           message: "Gate IDs must be unique",
         });
+      }
+      for (const gate of setupGates) {
+        if (gate.dependsOn.some((dependency) => !setupIds.has(dependency))) {
+          context.addIssue({
+            code: "custom",
+            path: ["projects", projectId, "gates", gate.id, "dependsOn"],
+            message: "Setup Gates may depend only on other setup Gates",
+          });
+        }
       }
       for (const gate of gates) {
         for (const dependency of gate.dependsOn) {

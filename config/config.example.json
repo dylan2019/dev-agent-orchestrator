@@ -33,6 +33,15 @@
       "worktreeRoot": "/absolute/path/to/repository-worktrees",
       "instructionFiles": ["AGENTS.md", "README.md"],
       "gates": {
+        "setup": [
+          {
+            "command": "/usr/bin/node",
+            "args": ["/usr/lib/node_modules/npm/bin/npm-cli.js", "ci", "--no-audit", "--no-fund"],
+            "id": "node-dependencies",
+            "dependsOn": [],
+            "timeoutMinutes": 30
+          }
+        ],
         "affected": [
           {
             "command": "/usr/bin/git",

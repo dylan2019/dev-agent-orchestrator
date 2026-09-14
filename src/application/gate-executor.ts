@@ -45,7 +45,11 @@ function selectedGateOrder(
       .filter(
         (gate) =>
           gate.paths === undefined ||
-          changedFiles.some((file) => pathIsCovered(file, gate.paths ?? [])),
+          changedFiles.some(
+            (file) =>
+              pathIsCovered(file, gate.paths ?? []) ||
+              (gate.paths ?? []).some((gatePath) => pathIsCovered(gatePath, [file])),
+          ),
       )
       .map((gate) => gate.id),
   );
@@ -99,6 +103,33 @@ export class GateExecutor {
     private readonly cache: GateCache,
     private readonly logger: EventLogger,
   ) {}
+
+  public async runSetup(
+    taskId: string,
+    project: ProjectProfile,
+    worktreePath: string,
+    authorizedPaths: readonly string[],
+  ): Promise<readonly GateResult[]> {
+    const ordered = selectedGateOrder(project.gates.setup ?? [], authorizedPaths);
+    const results: GateResult[] = [];
+    for (const gate of ordered) {
+      const before = await this.candidates.inspect(worktreePath);
+      const result = await this.runGate(taskId, project, worktreePath, gate, false);
+      results.push(result);
+      if (result.status === "fail") {
+        break;
+      }
+      const after = await this.candidates.inspect(worktreePath);
+      if (before.fingerprint !== after.fingerprint || before.baseCommit !== after.baseCommit) {
+        throw new OrchestratorError(
+          "SETUP_MODIFIED_CANDIDATE",
+          "Setup Gate modified the Git Candidate",
+          { gateId: gate.id },
+        );
+      }
+    }
+    return results;
+  }
 
   public async runAffected(
     taskId: string,

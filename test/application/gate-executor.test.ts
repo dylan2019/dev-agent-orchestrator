@@ -21,6 +21,7 @@ import type {
 } from "../../src/application/ports/process-runner.js";
 import type { ProjectProfile } from "../../src/configuration/schema.js";
 import { ProductionLogger } from "../../src/infrastructure/logging/production-logger.js";
+import { OrchestratorError } from "../../src/shared/errors.js";
 
 class MemoryGateCache implements GateCache {
   private readonly entries = new Map<string, GateCacheEntry>();
@@ -117,6 +118,19 @@ class FakeCandidateRepository implements CandidateRepository {
   }
 }
 
+class MutatingCandidateRepository extends FakeCandidateRepository {
+  private inspections = 0;
+
+  public override async inspect(): Promise<CandidateInspection> {
+    const inspection = await super.inspect();
+    this.inspections += 1;
+    return {
+      ...inspection,
+      fingerprint: (this.inspections === 1 ? "a" : "b").repeat(64),
+    };
+  }
+}
+
 function project(root: string): ProjectProfile {
   return {
     repository: root,
@@ -209,6 +223,48 @@ void test("Gate DAG stops after the first deterministic failure", async () => {
       ["pass", "fail"],
     );
     assert.equal(processes.calls, 2);
+  } finally {
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
+void test("setup Gates run before implementation and cannot modify the Git Candidate", async () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "orchestrator-setup-gate-"));
+  try {
+    const profile: ProjectProfile = {
+      ...project(temporary),
+      gates: {
+        ...project(temporary).gates,
+        setup: [
+          {
+            id: "dependencies",
+            command: process.execPath,
+            args: ["--version"],
+            dependsOn: [],
+            timeoutMinutes: 1,
+          },
+        ],
+      },
+    };
+    const stable = new GateExecutor(
+      new FakeProcessRunner(),
+      new FakeCandidateRepository(),
+      new MemoryGateCache(),
+      new ProductionLogger(path.join(temporary, "stable.jsonl"), 64_000),
+    );
+    assert.equal((await stable.runSetup("task-1", profile, temporary, ["src"])).length, 1);
+
+    const mutating = new GateExecutor(
+      new FakeProcessRunner(),
+      new MutatingCandidateRepository(),
+      new MemoryGateCache(),
+      new ProductionLogger(path.join(temporary, "mutating.jsonl"), 64_000),
+    );
+    await assert.rejects(
+      async () => await mutating.runSetup("task-1", profile, temporary, ["src"]),
+      (error: unknown) =>
+        error instanceof OrchestratorError && error.code === "SETUP_MODIFIED_CANDIDATE",
+    );
   } finally {
     fs.rmSync(temporary, { recursive: true, force: true });
   }

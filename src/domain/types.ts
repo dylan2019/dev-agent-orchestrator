@@ -111,7 +111,12 @@ export interface Delivery {
 }
 
 export interface ExternalBlock {
-  readonly reason: "provider_capacity" | "provider_rate_limit" | "semantic_stall" | "process_lost";
+  readonly reason:
+    | "provider_capacity"
+    | "provider_rate_limit"
+    | "semantic_stall"
+    | "process_lost"
+    | "environment_unavailable";
   readonly message: string;
   readonly blockedAt: string;
   readonly resumeState: Exclude<TaskState, "EXTERNAL_BLOCKED" | "COMMITTED" | "CANCELLED">;

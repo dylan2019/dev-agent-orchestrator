@@ -112,7 +112,13 @@ const DeliverySchema = z
   .strict();
 const ExternalBlockSchema = z
   .object({
-    reason: z.enum(["provider_capacity", "provider_rate_limit", "semantic_stall", "process_lost"]),
+    reason: z.enum([
+      "provider_capacity",
+      "provider_rate_limit",
+      "semantic_stall",
+      "process_lost",
+      "environment_unavailable",
+    ]),
     message: z.string().min(1),
     blockedAt: TimestampSchema,
     resumeState: z.enum(
