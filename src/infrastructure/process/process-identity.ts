@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
+import path from "node:path";
 import { spawnSync } from "node:child_process";
 
 import { OrchestratorError } from "../../shared/errors.js";
@@ -17,13 +18,38 @@ function windowsIdentity(pid: number): string | undefined {
     "$created = $item.CreationDate.ToUniversalTime().Ticks",
     "[Console]::Out.Write(('{0}|{1}|{2}' -f $item.ProcessId, $created, $item.ExecutablePath))",
   ].join("; ");
-  const result = spawnSync(
-    "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
-    ["-NoProfile", "-NonInteractive", "-Command", script],
-    { encoding: "utf8", windowsHide: true, timeout: 5_000, maxBuffer: 64_000 },
-  );
-  const value = result.status === 0 ? result.stdout.trim() : "";
-  return value ? hash(value) : undefined;
+  const commands = [
+    path.join(process.env.ProgramFiles ?? "C:\\Program Files", "PowerShell", "7", "pwsh.exe"),
+    path.join(
+      process.env.SystemRoot ?? "C:\\Windows",
+      "System32",
+      "WindowsPowerShell",
+      "v1.0",
+      "powershell.exe",
+    ),
+  ].filter((command, index, values) => fs.existsSync(command) && values.indexOf(command) === index);
+  for (const command of commands) {
+    const result = spawnSync(
+      command,
+      [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-InputFormat",
+        "None",
+        "-OutputFormat",
+        "Text",
+        "-Command",
+        script,
+      ],
+      { encoding: "utf8", windowsHide: true, timeout: 15_000, maxBuffer: 1_000_000 },
+    );
+    const value = result.status === 0 ? result.stdout.trim() : "";
+    if (value) {
+      return hash(value);
+    }
+  }
+  return undefined;
 }
 
 function linuxIdentity(pid: number): string | undefined {
