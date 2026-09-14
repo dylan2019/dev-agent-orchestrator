@@ -2,6 +2,7 @@ import path from "node:path";
 
 import type { ProcessRunner } from "../application/ports/process-runner.js";
 import { isEnvironmentTemplatePath } from "../domain/scope.js";
+import { OrchestratorError } from "../shared/errors.js";
 import {
   implementationPrompt,
   parseExecutionResult,
@@ -44,7 +45,11 @@ export class CursorAdapter implements WorkerAdapter {
       async (patchPaths) => {
         const patchFile = patchPaths["candidate.patch"];
         if (!patchFile) {
-          throw new Error("Candidate patch file was not created");
+          throw new OrchestratorError(
+            "EPHEMERAL_INPUT_MISSING",
+            "Candidate patch file was not created",
+            { adapter: this.id },
+          );
         }
         return await this.executeReview(
           request,
@@ -66,7 +71,11 @@ export class CursorAdapter implements WorkerAdapter {
         const promptFile = paths["task.md"];
         const configFile = paths["cli-config.json"];
         if (!promptFile || !configFile) {
-          throw new Error("Cursor ephemeral input was not created");
+          throw new OrchestratorError(
+            "EPHEMERAL_INPUT_MISSING",
+            "Cursor ephemeral input was not created",
+            { adapter: this.id },
+          );
         }
         const result = await this.processes.run(
           request.profile.command,
@@ -111,7 +120,11 @@ export class CursorAdapter implements WorkerAdapter {
         const promptFile = paths["review.md"];
         const configFile = paths["cli-config.json"];
         if (!promptFile || !configFile) {
-          throw new Error("Cursor review input was not created");
+          throw new OrchestratorError(
+            "EPHEMERAL_INPUT_MISSING",
+            "Cursor review input was not created",
+            { adapter: this.id },
+          );
         }
         const result = await this.processes.run(
           request.profile.command,

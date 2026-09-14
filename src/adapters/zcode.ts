@@ -1,6 +1,7 @@
 import path from "node:path";
 
 import type { ProcessRunner } from "../application/ports/process-runner.js";
+import { OrchestratorError } from "../shared/errors.js";
 import {
   implementationPrompt,
   parseExecutionResult,
@@ -51,7 +52,11 @@ export class ZcodeAdapter implements WorkerAdapter {
       async (paths) => {
         const patchFile = paths["candidate.patch"];
         if (!patchFile) {
-          throw new Error("Candidate patch file was not created");
+          throw new OrchestratorError(
+            "EPHEMERAL_INPUT_MISSING",
+            "Candidate patch file was not created",
+            { adapter: this.id },
+          );
         }
         const result = await this.execute(
           request,
@@ -70,7 +75,11 @@ export class ZcodeAdapter implements WorkerAdapter {
       async (paths) => {
         const promptFile = paths["task.md"];
         if (!promptFile) {
-          throw new Error("ZCode task input was not created");
+          throw new OrchestratorError(
+            "EPHEMERAL_INPUT_MISSING",
+            "ZCode task input was not created",
+            { adapter: this.id },
+          );
         }
         return await this.processes.run(
           request.profile.command,

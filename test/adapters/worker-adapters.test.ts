@@ -270,6 +270,23 @@ void test("Adapter registry exposes exactly four supported products", () => {
   assert.deepEqual(ids, ["antigravity", "cursor", "workbuddy", "zcode"]);
 });
 
+void test("WorkBuddy discovers model availability from its non-interactive help", async () => {
+  const helpText =
+    "--output-format --model --json-schema --add-dir supported model: workbuddy-model";
+  const processes = new RecordingProcessRunner([
+    result("2.137.1\n"),
+    result(helpText),
+    result(helpText),
+  ]);
+  const probe = await new WorkbuddyAdapter(processes).probe(
+    worker("workbuddy"),
+    project(os.tmpdir()),
+  );
+  assert.equal(probe.version, "2.137.1");
+  assert.equal(probe.modelAvailable, true);
+  assert.deepEqual(processes.calls[2]?.args.slice(-1), ["--help"]);
+});
+
 void test("Worker probe accepts CLI help emitted on stderr", async () => {
   const version = result("1.2.2\n");
   const help: ProcessRunResult = {

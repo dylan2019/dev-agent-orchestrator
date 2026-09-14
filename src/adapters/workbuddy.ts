@@ -1,4 +1,5 @@
 import type { ProcessRunner } from "../application/ports/process-runner.js";
+import { OrchestratorError } from "../shared/errors.js";
 import {
   implementationPrompt,
   parseExecutionResult,
@@ -47,7 +48,11 @@ export class WorkbuddyAdapter implements WorkerAdapter {
       async (paths) => {
         const patchFile = paths["candidate.patch"];
         if (!patchFile) {
-          throw new Error("Candidate patch file was not created");
+          throw new OrchestratorError(
+            "EPHEMERAL_INPUT_MISSING",
+            "Candidate patch file was not created",
+            { adapter: this.id },
+          );
         }
         const result = await this.execute(
           request,
