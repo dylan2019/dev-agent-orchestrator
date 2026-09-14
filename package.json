@@ -1,0 +1,61 @@
+{
+  "name": "dev-agent-orchestrator",
+  "version": "1.0.0",
+  "description": "Production-oriented local delivery orchestration for Git repositories.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "bin": {
+    "dev-agent-orchestrator": "dist/interfaces/cli/main.js"
+  },
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "config",
+    "docs",
+    "LICENSE",
+    "README.md",
+    "SECURITY.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dylan2019/dev-agent-orchestrator.git"
+  },
+  "bugs": {
+    "url": "https://github.com/dylan2019/dev-agent-orchestrator/issues"
+  },
+  "homepage": "https://github.com/dylan2019/dev-agent-orchestrator#readme",
+  "scripts": {
+    "clean": "node scripts/clean.mjs",
+    "prebuild": "npm run clean",
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint .",
+    "format:check": "prettier --check .",
+    "test": "npm run build && node --test dist/test/**/*.test.js",
+    "start": "node dist/interfaces/mcp/server.js",
+    "doctor": "node dist/interfaces/cli/main.js doctor",
+    "release:check": "node scripts/release-check.mjs",
+    "release:sbom": "cyclonedx-npm --output-format JSON --omit dev",
+    "prepack": "npm run build && npm run release:check"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "better-sqlite3": "13.0.3",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@cyclonedx/cyclonedx-npm": "6.0.1",
+    "@eslint/js": "10.0.1",
+    "@types/better-sqlite3": "9.6.0",
+    "@types/node": "24.9.2",
+    "eslint": "10.10.0",
+    "prettier": "3.9.6",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.70.0"
+  }
+}
