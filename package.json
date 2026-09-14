@@ -41,6 +41,7 @@
     "test": "npm run build && node --test dist/test/**/*.test.js",
     "start": "node dist/src/interfaces/mcp/server.js",
     "doctor": "node dist/src/interfaces/cli/main.js doctor",
+    "runtime:smoke": "npm run build && node scripts/live-smoke.mjs",
     "schema:generate": "npm run build && node scripts/generate-schema.mjs",
     "release:check": "npm run build && node scripts/release-check.mjs",
     "release:sbom": "cyclonedx-npm --output-format JSON --omit dev",
