@@ -13,6 +13,7 @@ import {
   recordControlReview,
   recordIndependentReview,
   requestScopeApproval,
+  startIndependentReviewAttempt,
   startImplementation,
 } from "../../src/domain/task.js";
 import type { TaskAggregate } from "../../src/domain/types.js";
@@ -62,6 +63,11 @@ void test("Task follows control review before independent review and delivery", 
     occurredAt: AT,
   }).task;
   assert.equal(current.state, "INDEPENDENT_REVIEWING");
+  current = startIndependentReviewAttempt(current, {
+    executorId: "reviewer",
+    model: "review-model",
+    occurredAt: AT,
+  }).task;
   current = recordIndependentReview(current, {
     candidateFingerprint: FIRST,
     executorId: "reviewer",

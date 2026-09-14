@@ -54,8 +54,21 @@ export class SqliteTaskStore implements TaskStore {
     this.persist(undefined, result);
   }
 
+  public createWithWriterLease(result: TransitionResult, acquiredAt: string): void {
+    this.transactionalPersist(result, () => {
+      this.acquireWriterLease(result.task.projectId, result.task.id, acquiredAt);
+    });
+  }
+
   public save(expectedRevision: number, result: TransitionResult): void {
     this.persist(expectedRevision, result);
+  }
+
+  public saveAndReleaseWriterLease(expectedRevision: number, result: TransitionResult): void {
+    this.transactionalPersist(result, () => {
+      this.persistStatements(expectedRevision, result);
+      this.releaseWriterLease(result.task.projectId, result.task.id);
+    }, false);
   }
 
   public get(taskId: string): TaskAggregate {
@@ -155,52 +168,22 @@ export class SqliteTaskStore implements TaskStore {
   }
 
   private persist(expectedRevision: number | undefined, result: TransitionResult): void {
+    this.transactionalPersist(result, () => {
+      this.persistStatements(expectedRevision, result);
+    }, false);
+  }
+
+  private transactionalPersist(
+    result: TransitionResult,
+    action: () => void,
+    includePersist = true,
+  ): void {
     const task = parseTaskAggregate(result.task);
-    this.assertEventMatchesTask(result.event, task);
-    const aggregateJson = serialize(task);
-    const payloadJson = serialize(result.event.payload);
     const transaction = this.database.transaction(() => {
-      if (expectedRevision === undefined) {
-        this.database
-          .prepare(
-            `INSERT INTO tasks(id, project_id, state, revision, aggregate_json, updated_at)
-             VALUES(?, ?, ?, ?, ?, ?)`,
-          )
-          .run(task.id, task.projectId, task.state, task.revision, aggregateJson, task.updatedAt);
-      } else {
-        const updated = this.database
-          .prepare(
-            `UPDATE tasks
-             SET state = ?, revision = ?, aggregate_json = ?, updated_at = ?
-             WHERE id = ? AND revision = ?`,
-          )
-          .run(task.state, task.revision, aggregateJson, task.updatedAt, task.id, expectedRevision);
-        if (updated.changes !== 1) {
-          const actual = this.database
-            .prepare<[string], { readonly revision: number }>(
-              "SELECT revision FROM tasks WHERE id = ?",
-            )
-            .get(task.id)?.revision;
-          throw new OrchestratorError("TASK_REVISION_CONFLICT", "Task revision is stale", {
-            taskId: task.id,
-            expectedRevision,
-            actualRevision: actual ?? null,
-          });
-        }
+      if (includePersist) {
+        this.persistStatements(undefined, result);
       }
-      this.database
-        .prepare(
-          `INSERT INTO task_events(task_id, revision, event_type, occurred_at, payload_json, aggregate_json)
-           VALUES(?, ?, ?, ?, ?, ?)`,
-        )
-        .run(
-          task.id,
-          task.revision,
-          result.event.type,
-          result.event.occurredAt,
-          payloadJson,
-          aggregateJson,
-        );
+      action();
     });
     try {
       transaction();
@@ -213,6 +196,52 @@ export class SqliteTaskStore implements TaskStore {
         revision: task.revision,
       });
     }
+  }
+
+  private persistStatements(expectedRevision: number | undefined, result: TransitionResult): void {
+    const task = parseTaskAggregate(result.task);
+    this.assertEventMatchesTask(result.event, task);
+    const aggregateJson = serialize(task);
+    const payloadJson = serialize(result.event.payload);
+    if (expectedRevision === undefined) {
+      this.database
+        .prepare(
+          `INSERT INTO tasks(id, project_id, state, revision, aggregate_json, updated_at)
+           VALUES(?, ?, ?, ?, ?, ?)`,
+        )
+        .run(task.id, task.projectId, task.state, task.revision, aggregateJson, task.updatedAt);
+    } else {
+      const updated = this.database
+        .prepare(
+          `UPDATE tasks
+           SET state = ?, revision = ?, aggregate_json = ?, updated_at = ?
+           WHERE id = ? AND revision = ?`,
+        )
+        .run(task.state, task.revision, aggregateJson, task.updatedAt, task.id, expectedRevision);
+      if (updated.changes !== 1) {
+        const actual = this.database
+          .prepare<[string], { readonly revision: number }>("SELECT revision FROM tasks WHERE id = ?")
+          .get(task.id)?.revision;
+        throw new OrchestratorError("TASK_REVISION_CONFLICT", "Task revision is stale", {
+          taskId: task.id,
+          expectedRevision,
+          actualRevision: actual ?? null,
+        });
+      }
+    }
+    this.database
+      .prepare(
+        `INSERT INTO task_events(task_id, revision, event_type, occurred_at, payload_json, aggregate_json)
+         VALUES(?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        task.id,
+        task.revision,
+        result.event.type,
+        result.event.occurredAt,
+        payloadJson,
+        aggregateJson,
+      );
   }
 
   private assertEventMatchesTask(domainEvent: DomainEvent, task: TaskAggregate): void {

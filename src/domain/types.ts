@@ -135,6 +135,7 @@ export interface TaskAggregate {
   readonly delivery?: Delivery | undefined;
   readonly externalBlock?: ExternalBlock | undefined;
   readonly reworkReason?: string | undefined;
+  readonly lastWorkerSummary?: string | undefined;
 }
 
 export interface DomainEvent {

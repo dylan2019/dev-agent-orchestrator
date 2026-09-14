@@ -167,6 +167,7 @@ export const TaskAggregateSchema = z
     delivery: DeliverySchema.optional(),
     externalBlock: ExternalBlockSchema.optional(),
     reworkReason: z.string().optional(),
+    lastWorkerSummary: z.string().max(20_000).optional(),
   })
   .strict();
 

@@ -114,8 +114,7 @@ export function startImplementation(
     (attempt) => attempt.kind === "implementation",
   ).length;
   assertDomain(
-    task.attempts.length < task.budget.maxAttempts &&
-      implementationRuns < task.budget.maxWorkerRuns,
+    implementationRuns < task.budget.maxAttempts && implementationRuns < task.budget.maxWorkerRuns,
     "IMPLEMENTATION_BUDGET_EXHAUSTED",
     "Implementation attempt budget is exhausted",
   );
@@ -250,6 +249,7 @@ export function recordCandidate(
   input: Omit<CandidateSnapshot, "id" | "createdAt" | "producedByAttempt"> & {
     readonly occurredAt: string;
     readonly sessionId?: string;
+    readonly workerSummary?: string;
   },
 ): TransitionResult {
   requireState(task, ["IMPLEMENTING"], "record candidate");
@@ -311,6 +311,7 @@ export function recordCandidate(
       controlReview: undefined,
       independentReview: undefined,
       delivery: undefined,
+      ...(input.workerSummary ? { lastWorkerSummary: input.workerSummary.slice(0, 20_000) } : {}),
     },
     { candidateId: candidate.id, fingerprint, changedFiles: candidate.changedFiles.length },
   );
@@ -377,11 +378,11 @@ export function recordIndependentReview(
 ): TransitionResult {
   requireState(task, ["INDEPENDENT_REVIEWING"], "record independent review");
   const candidate = requireCurrentCandidate(task, input.candidateFingerprint);
+  const attempt = task.attempts.at(-1);
   assertDomain(
-    task.attempts.filter((attempt) => attempt.kind === "independent_review").length <
-      task.budget.maxReviewerRuns,
-    "REVIEW_BUDGET_EXHAUSTED",
-    "Independent review budget is exhausted",
+    attempt?.kind === "independent_review" && attempt.status === "running",
+    "REVIEW_ATTEMPT_MISSING",
+    "Running independent-review Attempt is missing",
   );
   const review: IndependentReview = {
     ...input,
@@ -395,9 +396,87 @@ export function recordIndependentReview(
     "independent_review.finished",
     {
       independentReview: review,
+      attempts: finishCurrentAttempt(task.attempts, input.reviewedAt, "succeeded"),
       ...(review.verdict === "fail" ? { reworkReason: review.summary } : {}),
     },
     { verdict: review.verdict, candidateFingerprint: candidate.fingerprint },
+  );
+}
+
+export function startIndependentReviewAttempt(
+  task: TaskAggregate,
+  input: { readonly executorId: string; readonly model: string; readonly occurredAt: string },
+): TransitionResult {
+  requireState(task, ["INDEPENDENT_REVIEWING"], "start independent review");
+  const reviewRuns = task.attempts.filter(
+    (attempt) => attempt.kind === "independent_review",
+  ).length;
+  assertDomain(
+    reviewRuns < task.budget.maxReviewerRuns,
+    "REVIEW_BUDGET_EXHAUSTED",
+    "Independent review budget is exhausted",
+  );
+  const scopeRevision = task.scopeGrants.at(-1)?.revision;
+  assertDomain(scopeRevision !== undefined, "SCOPE_MISSING", "Task has no ScopeGrant");
+  const attempt: Attempt = {
+    number: task.attempts.length + 1,
+    kind: "independent_review",
+    executorId: input.executorId,
+    model: input.model,
+    scopeRevision,
+    status: "running",
+    startedAt: input.occurredAt,
+  };
+  return transitioned(
+    task,
+    "INDEPENDENT_REVIEWING",
+    input.occurredAt,
+    "independent_review.started",
+    { attempts: [...task.attempts, attempt] },
+    { attempt: attempt.number, executorId: input.executorId, model: input.model },
+  );
+}
+
+export function requireRework(
+  task: TaskAggregate,
+  input: { readonly reason: string; readonly errorCode: string; readonly occurredAt: string },
+): TransitionResult {
+  requireState(
+    task,
+    ["IMPLEMENTING", "VERIFYING", "AWAITING_CONTROL_REVIEW", "INDEPENDENT_REVIEWING", "ACCEPTING"],
+    "require rework",
+  );
+  const reason = input.reason.trim();
+  assertDomain(reason.length > 0, "REWORK_REASON_REQUIRED", "Rework reason is required");
+  return transitioned(
+    task,
+    "REWORK_REQUIRED",
+    input.occurredAt,
+    "rework.required",
+    {
+      attempts: finishCurrentAttempt(task.attempts, input.occurredAt, "failed", input.errorCode),
+      reworkReason: reason,
+      externalBlock: undefined,
+    },
+    { errorCode: input.errorCode },
+  );
+}
+
+export function confirmRework(
+  task: TaskAggregate,
+  reason: string,
+  occurredAt: string,
+): TransitionResult {
+  requireState(task, ["REWORK_REQUIRED"], "confirm rework");
+  const normalized = reason.trim();
+  assertDomain(normalized.length > 0, "REWORK_REASON_REQUIRED", "Rework reason is required");
+  return transitioned(
+    task,
+    "REWORK_REQUIRED",
+    occurredAt,
+    "rework.confirmed",
+    { reworkReason: normalized },
+    {},
   );
 }
 
@@ -490,7 +569,10 @@ export function blockExternally(task: TaskAggregate, block: ExternalBlock): Tran
     "EXTERNAL_BLOCKED",
     block.blockedAt,
     "task.external_blocked",
-    { externalBlock: block },
+    {
+      externalBlock: block,
+      attempts: finishCurrentAttempt(task.attempts, block.blockedAt, "failed", block.reason),
+    },
     { reason: block.reason },
   );
 }
@@ -501,10 +583,10 @@ export function resumeExternalBlock(task: TaskAggregate, occurredAt: string): Tr
   assertDomain(block !== undefined, "EXTERNAL_BLOCK_MISSING", "External block evidence is missing");
   return transitioned(
     task,
-    block.resumeState,
+    "REWORK_REQUIRED",
     occurredAt,
     "task.external_resumed",
-    { externalBlock: undefined },
+    { externalBlock: undefined, reworkReason: block.message },
     { previousReason: block.reason },
   );
 }
