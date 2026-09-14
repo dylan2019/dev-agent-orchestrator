@@ -73,4 +73,3 @@ No stable release is created from a developer workstation until every gate below
 - one documented golden path completes in under ten minutes excluding model latency
 - TypeScript, Java multi-module, and mixed frontend/backend example repositories
 - twenty real dogfood Tasks with no state repair or Candidate replay
-

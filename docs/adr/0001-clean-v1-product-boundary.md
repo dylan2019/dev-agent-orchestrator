@@ -19,4 +19,3 @@ Legacy runtime state and policies are not loaded by the new product.
 - Storage and state-machine work must be completed before Worker adapters.
 - Existing remote history cannot truthfully represent the new 1.0.0 without either a new repository or an explicitly authorized history replacement.
 - Stable release requires multi-platform CI and real dogfood evidence.
-

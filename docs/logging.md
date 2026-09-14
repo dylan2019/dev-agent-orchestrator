@@ -60,4 +60,3 @@ Raw diagnostic capture is disabled by default. An operator may create an explici
 - successful Task Worktrees: removed after verified integration
 - cancelled/terminal Candidate data: retained for a bounded recovery period, then removed unless pinned
 - debug data: short TTL only
-

@@ -31,4 +31,3 @@ Every decision requires the observed Task revision and, where applicable, the ob
 ## Internal operations
 
 Worker execution, Gate runs, Reviewer execution, retries, recovery, acceptance, commit creation, and integration are not public MCP tools. They are driven by the application workflow and persisted as domain events.
-

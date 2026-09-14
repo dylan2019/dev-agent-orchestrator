@@ -151,4 +151,3 @@ Large process streams and Candidate file bodies are not stored in the database. 
 ## 9. Compatibility
 
 This is a clean 1.0.0 product. It does not load legacy `task.json`, legacy policy files, or legacy Worktrees. An optional offline legacy inspector may be built later, but it cannot participate in the new runtime or mutate legacy state.
-

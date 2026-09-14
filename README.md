@@ -41,4 +41,3 @@ dev-agent-orchestrator mcp uninstall
 ```
 
 Implementation starts only after the architecture, state-machine, logging, security, and release contracts in `docs/` are frozen.
-
