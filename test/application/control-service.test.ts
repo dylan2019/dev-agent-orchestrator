@@ -33,11 +33,14 @@ class FakeLauncher implements RunnerLauncher {
 }
 
 class FakeCandidates implements CandidateRepository {
-  public constructor(private readonly project: OrchestratorConfig["projects"][string]) {}
+  public constructor(
+    private readonly project: OrchestratorConfig["projects"][string],
+    private readonly reportedRoot = project.repository,
+  ) {}
 
   public async inspectProject(): Promise<ProjectGitState> {
     return await Promise.resolve({
-      root: this.project.repository,
+      root: this.reportedRoot,
       branch: this.project.targetBranch,
       head: "1".repeat(40),
       clean: true,
@@ -199,6 +202,51 @@ void test("control service creates one Task with an atomic lease and rejects sta
     });
     assert.equal(cancelled.state, "CANCELLED");
     assert.equal(store.writerLeaseOwner("example"), undefined);
+  } finally {
+    runtime.close();
+    store.close();
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
+void test("control service accepts canonical Git roots reached through a filesystem alias", async () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "orchestrator-canonical-root-"));
+  const configuration = config(temporary);
+  const project = configuration.projects.example;
+  assert.ok(project);
+  const canonicalRepository = path.join(temporary, "canonical-repository");
+  fs.mkdirSync(canonicalRepository);
+  fs.symlinkSync(
+    canonicalRepository,
+    project.repository,
+    process.platform === "win32" ? "junction" : "dir",
+  );
+  const configRepository = new ConfigFileRepository(path.join(temporary, "config.json"));
+  configRepository.write(configuration);
+  const store = new SqliteTaskStore(path.join(temporary, "state.db"));
+  const runtime = new SqliteRuntimeRegistry(path.join(temporary, "state.db"));
+  const control = new ControlService(
+    configRepository,
+    store,
+    new FakeCandidates(project, canonicalRepository),
+    new FakeLauncher(),
+    runtime,
+    new LocalProcessSupervisor(runtime),
+    new ProductionLogger(path.join(temporary, "events.jsonl"), 64_000),
+  );
+  try {
+    const task = await control.start({
+      objective: "Accept one canonical repository identity",
+      risk: "normal",
+      initialScope: ["src"],
+    });
+    const cancelled = await control.decide({
+      action: "cancel",
+      taskId: task.id,
+      expectedRevision: task.revision,
+      reason: "canonical root verified",
+    });
+    assert.equal(cancelled.state, "CANCELLED");
   } finally {
     runtime.close();
     store.close();

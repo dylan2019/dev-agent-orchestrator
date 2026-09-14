@@ -106,7 +106,13 @@ function taskId(): string {
 function samePath(left: string, right: string): boolean {
   const normalize = (value: string) => {
     const resolved = path.resolve(value);
-    return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+    let canonical = resolved;
+    try {
+      canonical = fs.realpathSync.native(resolved);
+    } catch {
+      // A missing path is still compared deterministically and rejected by project readiness checks.
+    }
+    return process.platform === "win32" ? canonical.toLowerCase() : canonical;
   };
   return normalize(left) === normalize(right);
 }
