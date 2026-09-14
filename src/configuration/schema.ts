@@ -94,6 +94,7 @@ export const OrchestratorConfigSchema = z
   .object({
     version: z.literal(CONFIG_VERSION),
     defaultProject: StableIdSchema,
+    runtime: z.object({ gitCommand: AbsolutePathSchema }).strict(),
     workers: z.record(StableIdSchema, WorkerSchema),
     routing: z
       .object({

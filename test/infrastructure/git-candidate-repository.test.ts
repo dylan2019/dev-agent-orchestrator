@@ -1,0 +1,110 @@
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+
+import type { ProjectProfile } from "../../src/configuration/schema.js";
+import { GitCandidateRepository } from "../../src/infrastructure/git/git-candidate-repository.js";
+import { LocalProcessRunner } from "../../src/infrastructure/process/local-process-runner.js";
+
+function gitCommand(): string {
+  const lookup =
+    process.platform === "win32"
+      ? spawnSync("C:\\Windows\\System32\\where.exe", ["git.exe"], { encoding: "utf8" })
+      : spawnSync("which", ["git"], { encoding: "utf8" });
+  const command = lookup.stdout
+    .split(/\r?\n/)
+    .map((value) => value.trim())
+    .find((value) => path.isAbsolute(value) && fs.existsSync(value));
+  if (!command) {
+    throw new Error("Git executable is unavailable for integration tests");
+  }
+  return command;
+}
+
+async function runGit(command: string, cwd: string, args: readonly string[]): Promise<void> {
+  const result = await new LocalProcessRunner().run(command, args, {
+    cwd,
+    timeoutMs: 30_000,
+    maxCaptureBytes: 10_000,
+  });
+  assert.equal(result.exitCode, 0, result.stderr);
+}
+
+void test("Git Candidate repository preserves fingerprints, patches, approved trees, and ff-only delivery", async () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "orchestrator-git-"));
+  const repositoryPath = path.join(temporary, "repository");
+  const worktreeRoot = path.join(temporary, "worktrees");
+  const git = gitCommand();
+  const candidates = new GitCandidateRepository(git, new LocalProcessRunner());
+  const project: ProjectProfile = {
+    repository: repositoryPath,
+    targetBranch: "main",
+    worktreeRoot,
+    instructionFiles: [],
+    gates: {
+      affected: [
+        {
+          id: "unit",
+          command: process.execPath,
+          args: ["--version"],
+          dependsOn: [],
+          timeoutMinutes: 1,
+        },
+      ],
+      acceptance: {
+        id: "acceptance",
+        command: process.execPath,
+        args: ["--version"],
+        dependsOn: ["unit"],
+        timeoutMinutes: 1,
+      },
+    },
+  };
+  let worktreePath: string | undefined;
+  try {
+    fs.mkdirSync(repositoryPath);
+    await runGit(git, repositoryPath, ["init", "-b", "main"]);
+    await runGit(git, repositoryPath, ["config", "user.name", "Candidate Test"]);
+    await runGit(git, repositoryPath, ["config", "user.email", "candidate@example.invalid"]);
+    fs.writeFileSync(path.join(repositoryPath, "tracked.txt"), "base\n", "utf8");
+    await runGit(git, repositoryPath, ["add", "tracked.txt"]);
+    await runGit(git, repositoryPath, ["commit", "-m", "test: baseline"]);
+
+    const state = await candidates.inspectProject(project);
+    assert.equal(state.clean, true);
+    assert.equal(state.branch, "main");
+    worktreePath = await candidates.createWorktree(project, "task-candidate-0001", state.head);
+    fs.writeFileSync(path.join(worktreePath, "tracked.txt"), "changed\n", "utf8");
+    fs.writeFileSync(path.join(worktreePath, "untracked.txt"), "new\nfile\n", "utf8");
+
+    const first = await candidates.inspect(worktreePath);
+    const second = await candidates.inspect(worktreePath);
+    assert.deepEqual(first.changedFiles, ["tracked.txt", "untracked.txt"]);
+    assert.equal(first.changedLines >= 3, true);
+    assert.equal(first.fingerprint, second.fingerprint);
+    const patch = await candidates.getPatch(worktreePath, 20_000);
+    assert.match(patch.patch, /tracked\.txt/);
+    assert.match(patch.patch, /untracked\.txt/);
+    assert.equal(patch.truncated, false);
+    const filePatch = await candidates.getFilePatch(worktreePath, "untracked.txt", 10_000);
+    assert.match(filePatch.patch, /new/);
+
+    const prepared = await candidates.prepareCommit(
+      worktreePath,
+      first.fingerprint,
+      "test: candidate delivery",
+    );
+    await candidates.integrate(project, state.head, prepared, false);
+    assert.equal((await candidates.inspectProject(project)).head, prepared.commitHash);
+    await candidates.removeWorktree(project, worktreePath, false);
+    worktreePath = undefined;
+  } finally {
+    if (worktreePath && fs.existsSync(worktreePath)) {
+      await candidates.removeWorktree(project, worktreePath, true);
+    }
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
+});

@@ -16,6 +16,7 @@ function config(root: string): OrchestratorConfig {
   return {
     version: CONFIG_VERSION,
     defaultProject: "example",
+    runtime: { gitCommand: process.execPath },
     workers: {
       implementation: {
         adapter: "cursor",
