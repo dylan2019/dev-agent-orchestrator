@@ -14,6 +14,7 @@ export function createControlRuntime(runnerFile: string, home?: string) {
       components.candidates,
       launcher,
       components.runtimeRegistry,
+      components.supervisor,
       components.logger,
     ),
     doctor: new DoctorService(

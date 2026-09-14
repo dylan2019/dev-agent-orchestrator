@@ -6,6 +6,7 @@ import { ConfigFileRepository } from "../configuration/file-repository.js";
 import { GitCandidateRepository } from "../infrastructure/git/git-candidate-repository.js";
 import { ProductionLogger } from "../infrastructure/logging/production-logger.js";
 import { LocalProcessRunner } from "../infrastructure/process/local-process-runner.js";
+import { LocalProcessSupervisor } from "../infrastructure/process/local-process-supervisor.js";
 import { SqliteGateCache } from "../infrastructure/sqlite/gate-cache.js";
 import { SqliteRuntimeRegistry } from "../infrastructure/sqlite/runtime-registry.js";
 import { SqliteTaskStore } from "../infrastructure/sqlite/task-store.js";
@@ -20,6 +21,7 @@ export interface RuntimeComponents {
   readonly runtimeRegistry: SqliteRuntimeRegistry;
   readonly logger: ProductionLogger;
   readonly processes: LocalProcessRunner;
+  readonly supervisor: LocalProcessSupervisor;
   readonly candidates: GitCandidateRepository;
   readonly gates: GateExecutor;
   readonly adapters: WorkerAdapterRegistry;
@@ -43,8 +45,13 @@ export function createRuntimeComponents(home?: string): RuntimeComponents {
   const store = new SqliteTaskStore(paths.stateDatabase);
   const gateCache = new SqliteGateCache(paths.stateDatabase);
   const runtimeRegistry = new SqliteRuntimeRegistry(paths.stateDatabase);
-  const logger = new ProductionLogger(paths.eventLog, config.logging.maxBytes);
+  const logger = new ProductionLogger(
+    paths.eventLog,
+    config.logging.maxBytes,
+    config.logging.retentionDays,
+  );
   const processes = new LocalProcessRunner();
+  const supervisor = new LocalProcessSupervisor(runtimeRegistry);
   const candidates = new GitCandidateRepository(config.runtime.gitCommand, processes);
   const gates = new GateExecutor(processes, candidates, gateCache, logger);
   const adapters = new WorkerAdapterRegistry(processes);
@@ -56,6 +63,7 @@ export function createRuntimeComponents(home?: string): RuntimeComponents {
     runtimeRegistry,
     logger,
     processes,
+    supervisor,
     candidates,
     gates,
     adapters,

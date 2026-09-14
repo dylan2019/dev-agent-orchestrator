@@ -4,10 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import {
-  ProductionLogger,
-  type ProductionLogEvent,
-} from "../../src/infrastructure/logging/production-logger.js";
+import type { ProductionLogEvent } from "../../src/application/ports/event-logger.js";
+import { ProductionLogger } from "../../src/infrastructure/logging/production-logger.js";
 
 void test("production logger persists only whitelisted key fields and deduplicates unchanged events", () => {
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "orchestrator-log-"));
@@ -54,6 +52,22 @@ void test("production logger rotates within a hard two-segment byte limit", () =
     const previous = `${file}.previous`;
     assert.equal(fs.existsSync(previous), true);
     assert.equal(fs.statSync(file).size + fs.statSync(previous).size <= maxBytes, true);
+  } finally {
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
+void test("production logger removes expired segments before writing", () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "orchestrator-log-retention-"));
+  const file = path.join(temporary, "events.jsonl");
+  try {
+    fs.writeFileSync(file, "expired\n", "utf8");
+    const expired = new Date(Date.now() - 3 * 24 * 60 * 60 * 1_000);
+    fs.utimesSync(file, expired, expired);
+    const logger = new ProductionLogger(file, 64_000, 1);
+    assert.equal(fs.existsSync(file), false);
+    logger.write({ level: "info", event: "task.created", taskId: "task-new" });
+    assert.doesNotMatch(fs.readFileSync(file, "utf8"), /expired/);
   } finally {
     fs.rmSync(temporary, { recursive: true, force: true });
   }

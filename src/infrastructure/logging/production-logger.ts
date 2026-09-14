@@ -2,49 +2,12 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
+import {
+  LOG_EVENTS,
+  type EventLogger,
+  type ProductionLogEvent,
+} from "../../application/ports/event-logger.js";
 import { OrchestratorError, wrapError } from "../../shared/errors.js";
-
-export const LOG_EVENTS = [
-  "task.created",
-  "state.changed",
-  "lease.acquired",
-  "lease.released",
-  "worker.started",
-  "worker.finished",
-  "scope.requested",
-  "scope.approved",
-  "candidate.created",
-  "gate.started",
-  "gate.finished",
-  "control_review.recorded",
-  "independent_review.started",
-  "independent_review.finished",
-  "delivery.started",
-  "delivery.finished",
-  "process.terminated",
-  "error",
-] as const;
-
-export type LogEventName = (typeof LOG_EVENTS)[number];
-export type LogLevel = "info" | "warn" | "error";
-
-export interface ProductionLogEvent {
-  readonly level: LogLevel;
-  readonly event: LogEventName;
-  readonly taskId?: string;
-  readonly projectId?: string;
-  readonly attempt?: number;
-  readonly state?: string;
-  readonly operation?: string;
-  readonly durationMs?: number;
-  readonly outcome?: "started" | "pass" | "fail" | "blocked" | "cancelled" | "committed";
-  readonly errorCode?: string;
-  readonly message?: string;
-  readonly toolEvents?: number;
-  readonly capturedBytes?: number;
-  readonly changedFiles?: number;
-  readonly changedLines?: number;
-}
 
 interface PersistedLogEvent extends ProductionLogEvent {
   readonly timestamp: string;
@@ -82,19 +45,29 @@ function redactMessage(value: string): string {
     .slice(0, 500);
 }
 
-export class ProductionLogger {
+export class ProductionLogger implements EventLogger {
   private readonly previousFile: string;
   private lastEventHash: string | undefined;
 
   public constructor(
     private readonly file: string,
     private readonly maxBytes: number,
+    retentionDays = 14,
   ) {
     if (!Number.isInteger(maxBytes) || maxBytes < 1_024) {
       throw new OrchestratorError("INVALID_LOG_LIMIT", "Production log limit is invalid");
     }
+    if (!Number.isInteger(retentionDays) || retentionDays < 1 || retentionDays > 90) {
+      throw new OrchestratorError("INVALID_LOG_RETENTION", "Production log retention is invalid");
+    }
     fs.mkdirSync(path.dirname(path.resolve(file)), { recursive: true, mode: 0o700 });
     this.previousFile = `${file}.previous`;
+    const expiresBefore = Date.now() - retentionDays * 24 * 60 * 60 * 1_000;
+    for (const target of [this.file, this.previousFile]) {
+      if (fs.existsSync(target) && fs.statSync(target).mtimeMs < expiresBefore) {
+        fs.unlinkSync(target);
+      }
+    }
   }
 
   public write(input: ProductionLogEvent, date = new Date()): boolean {

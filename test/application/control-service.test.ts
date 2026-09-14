@@ -18,6 +18,7 @@ import { ConfigFileRepository } from "../../src/configuration/file-repository.js
 import { CONFIG_VERSION, type OrchestratorConfig } from "../../src/configuration/schema.js";
 import { DEFAULT_BUDGETS } from "../../src/domain/budgets.js";
 import { ProductionLogger } from "../../src/infrastructure/logging/production-logger.js";
+import { LocalProcessSupervisor } from "../../src/infrastructure/process/local-process-supervisor.js";
 import { SqliteRuntimeRegistry } from "../../src/infrastructure/sqlite/runtime-registry.js";
 import { SqliteTaskStore } from "../../src/infrastructure/sqlite/task-store.js";
 import { OrchestratorError } from "../../src/shared/errors.js";
@@ -160,6 +161,7 @@ void test("control service creates one Task with an atomic lease and rejects sta
     new FakeCandidates(project),
     launcher,
     runtime,
+    new LocalProcessSupervisor(runtime),
     new ProductionLogger(path.join(temporary, "events.jsonl"), 64_000),
   );
   try {

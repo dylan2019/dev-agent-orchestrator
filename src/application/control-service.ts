@@ -16,13 +16,6 @@ import {
   resumeExternalBlock,
 } from "../domain/task.js";
 import type { RiskLevel, TaskAggregate, TransitionResult } from "../domain/types.js";
-import type { ProductionLogger } from "../infrastructure/logging/production-logger.js";
-import {
-  processIdentity,
-  processIsAlive,
-  waitForProcessExit,
-} from "../infrastructure/process/process-identity.js";
-import { terminateProcessTree } from "../infrastructure/process/local-process-runner.js";
 import { OrchestratorError, wrapError } from "../shared/errors.js";
 import { assertExecutionBinding, resolveExecutionBinding } from "./execution-profile.js";
 import type {
@@ -31,6 +24,8 @@ import type {
   CandidatePatch,
   CandidateRepository,
 } from "./ports/candidate-repository.js";
+import type { EventLogger } from "./ports/event-logger.js";
+import type { ProcessSupervisor } from "./ports/process-supervisor.js";
 import type { RunnerLauncher } from "./ports/runner-launcher.js";
 import type { RuntimeRegistry } from "./ports/runtime-registry.js";
 import type { TaskStore } from "./ports/task-store.js";
@@ -142,7 +137,8 @@ export class ControlService {
     private readonly candidates: CandidateRepository,
     private readonly launcher: RunnerLauncher,
     private readonly runtime: RuntimeRegistry,
-    private readonly logger: ProductionLogger,
+    private readonly supervisor: ProcessSupervisor,
+    private readonly logger: EventLogger,
   ) {}
 
   public async reconcile(): Promise<{ readonly blockedTasks: readonly string[] }> {
@@ -160,7 +156,7 @@ export class ControlService {
         continue;
       }
       const runner = this.runtime.get(task.id, "runner");
-      if (runner && processIsAlive(runner.pid) && processIdentity(runner.pid) === runner.identity) {
+      if (runner && this.supervisor.status(runner) === "owned") {
         continue;
       }
       if (runner) {
@@ -168,9 +164,8 @@ export class ControlService {
       }
       const worker = this.runtime.get(task.id, "worker");
       if (worker) {
-        if (processIsAlive(worker.pid) && processIdentity(worker.pid) === worker.identity) {
-          terminateProcessTree(worker.pid);
-          await waitForProcessExit(worker.pid);
+        if (this.supervisor.status(worker) === "owned") {
+          await this.supervisor.terminate(worker);
         }
         this.runtime.clear(task.id, "worker", worker.pid, worker.identity);
       }
@@ -457,28 +452,7 @@ export class ControlService {
       left.role === "runner" ? -1 : 1,
     );
     for (const record of records) {
-      if (processIsAlive(record.pid)) {
-        const actualIdentity = processIdentity(record.pid);
-        if (actualIdentity !== record.identity) {
-          throw new OrchestratorError(
-            "RUNTIME_PROCESS_IDENTITY_MISMATCH",
-            "Refusing to terminate a reused Process ID",
-            { taskId: taskIdValue, role: record.role, pid: record.pid },
-          );
-        }
-        terminateProcessTree(record.pid);
-        if (!(await waitForProcessExit(record.pid))) {
-          throw new OrchestratorError(
-            "PROCESS_TERMINATION_FAILED",
-            "Runtime process did not stop",
-            {
-              taskId: taskIdValue,
-              role: record.role,
-              pid: record.pid,
-            },
-          );
-        }
-      }
+      await this.supervisor.terminate(record);
       const current = this.runtime.get(taskIdValue, record.role);
       if (current?.pid === record.pid && current.identity === record.identity) {
         this.runtime.clear(taskIdValue, record.role, record.pid, record.identity);

@@ -57,6 +57,18 @@ export class DoctorService {
       });
     }
     for (const [id, project] of projects) {
+      if (
+        normalized(project.gates.acceptance.command) === normalized(config.runtime.gitCommand) &&
+        project.gates.acceptance.args.join(" ").includes("diff --check")
+      ) {
+        issues.push({
+          severity: "warning",
+          code: "ACCEPTANCE_GATE_WEAK",
+          message:
+            "Acceptance only checks Git diff formatting; configure a project-specific release gate",
+          subject: id,
+        });
+      }
       if (overlaps(project.repository, project.worktreeRoot)) {
         issues.push({
           severity: "error",

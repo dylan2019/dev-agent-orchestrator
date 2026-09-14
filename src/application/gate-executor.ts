@@ -7,7 +7,7 @@ import type { ProcessRunner } from "./ports/process-runner.js";
 import type { GateDefinition, ProjectProfile } from "../configuration/schema.js";
 import { pathIsCovered } from "../domain/scope.js";
 import type { GateResult } from "../domain/types.js";
-import type { ProductionLogger } from "../infrastructure/logging/production-logger.js";
+import type { EventLogger } from "./ports/event-logger.js";
 import { OrchestratorError } from "../shared/errors.js";
 
 function isWithin(root: string, candidate: string): boolean {
@@ -97,7 +97,7 @@ export class GateExecutor {
     private readonly processes: ProcessRunner,
     private readonly candidates: CandidateRepository,
     private readonly cache: GateCache,
-    private readonly logger: ProductionLogger,
+    private readonly logger: EventLogger,
   ) {}
 
   public async runAffected(

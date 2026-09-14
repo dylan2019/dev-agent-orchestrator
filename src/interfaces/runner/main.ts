@@ -35,7 +35,7 @@ try {
     components.candidates,
     components.gates,
     components.adapters,
-    components.runtimeRegistry,
+    components.supervisor,
     components.logger,
     components.paths.tasksDirectory,
   );

@@ -18,12 +18,11 @@ import type { ExternalBlock, TaskAggregate, TransitionResult } from "../domain/t
 import type { WorkerAdapterRegistry } from "../adapters/registry.js";
 import type { ConfigFileRepository } from "../configuration/file-repository.js";
 import type { CandidateRepository } from "./ports/candidate-repository.js";
-import type { RuntimeProcessRecord, RuntimeRegistry } from "./ports/runtime-registry.js";
+import type { ProcessSupervisor } from "./ports/process-supervisor.js";
 import type { TaskStore } from "./ports/task-store.js";
 import type { GateExecutor } from "./gate-executor.js";
 import { assertExecutionBinding } from "./execution-profile.js";
-import type { ProductionLogger } from "../infrastructure/logging/production-logger.js";
-import { waitForProcessIdentity } from "../infrastructure/process/process-identity.js";
+import type { EventLogger } from "./ports/event-logger.js";
 import { OrchestratorError } from "../shared/errors.js";
 
 function now(): string {
@@ -54,8 +53,8 @@ export class TaskExecutionService {
     private readonly candidates: CandidateRepository,
     private readonly gates: GateExecutor,
     private readonly adapters: WorkerAdapterRegistry,
-    private readonly runtime: RuntimeRegistry,
-    private readonly logger: ProductionLogger,
+    private readonly supervisor: ProcessSupervisor,
+    private readonly logger: EventLogger,
     private readonly tasksDirectory: string,
   ) {}
 
@@ -103,7 +102,7 @@ export class TaskExecutionService {
       outcome: "started",
     });
     try {
-      const hooks = this.processHooks(task.id);
+      const hooks = this.supervisor.workerHooks(task.id);
       const result = await this.adapters.get(binding.implementationWorker.adapter).implement({
         task,
         project: binding.project,
@@ -213,7 +212,7 @@ export class TaskExecutionService {
           "Candidate changed before review",
         );
       }
-      const hooks = this.processHooks(task.id);
+      const hooks = this.supervisor.workerHooks(task.id);
       this.logger.write({
         level: "info",
         event: "independent_review.started",
@@ -326,34 +325,6 @@ export class TaskExecutionService {
     } catch (error) {
       return this.handleExecutionError(task, error, "ACCEPTING");
     }
-  }
-
-  private processHooks(taskId: string): {
-    readonly onSpawn: (pid: number) => Promise<void>;
-    readonly onExit: (pid: number) => void;
-  } {
-    let registered: RuntimeProcessRecord | undefined;
-    return {
-      onSpawn: async (pid) => {
-        const identity = await waitForProcessIdentity(pid);
-        if (!identity) {
-          throw new OrchestratorError(
-            "PROCESS_IDENTITY_UNAVAILABLE",
-            "Worker identity is unavailable",
-            {
-              pid,
-            },
-          );
-        }
-        registered = { taskId, role: "worker", pid, identity, startedAt: now() };
-        this.runtime.register(registered);
-      },
-      onExit: (pid) => {
-        if (registered?.pid === pid) {
-          this.runtime.clear(taskId, "worker", pid, registered.identity);
-        }
-      },
-    };
   }
 
   private handleExecutionError(
