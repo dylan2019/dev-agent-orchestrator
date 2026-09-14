@@ -1,0 +1,205 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+
+import { ControlService } from "../../src/application/control-service.js";
+import type {
+  CandidateFilePatch,
+  CandidateInspection,
+  CandidatePatch,
+  CandidateRepository,
+  PreparedCommit,
+  ProjectGitState,
+} from "../../src/application/ports/candidate-repository.js";
+import type { RunnerLauncher } from "../../src/application/ports/runner-launcher.js";
+import { ConfigFileRepository } from "../../src/configuration/file-repository.js";
+import { CONFIG_VERSION, type OrchestratorConfig } from "../../src/configuration/schema.js";
+import { DEFAULT_BUDGETS } from "../../src/domain/budgets.js";
+import { ProductionLogger } from "../../src/infrastructure/logging/production-logger.js";
+import { SqliteRuntimeRegistry } from "../../src/infrastructure/sqlite/runtime-registry.js";
+import { SqliteTaskStore } from "../../src/infrastructure/sqlite/task-store.js";
+import { OrchestratorError } from "../../src/shared/errors.js";
+
+class FakeLauncher implements RunnerLauncher {
+  public readonly launched: string[] = [];
+
+  public async launch(taskId: string): Promise<number> {
+    this.launched.push(taskId);
+    return await Promise.resolve(1000 + this.launched.length);
+  }
+}
+
+class FakeCandidates implements CandidateRepository {
+  public constructor(private readonly project: OrchestratorConfig["projects"][string]) {}
+
+  public async inspectProject(): Promise<ProjectGitState> {
+    return await Promise.resolve({
+      root: this.project.repository,
+      branch: this.project.targetBranch,
+      head: "1".repeat(40),
+      clean: true,
+      status: "",
+    });
+  }
+
+  public async createWorktree(
+    _project: OrchestratorConfig["projects"][string],
+    taskId: string,
+  ): Promise<string> {
+    const target = path.join(this.project.worktreeRoot, taskId);
+    fs.mkdirSync(target, { recursive: true });
+    return await Promise.resolve(target);
+  }
+
+  public inspect(): Promise<CandidateInspection> {
+    return Promise.reject(new Error("not used"));
+  }
+
+  public hashRelevantPaths(): Promise<string> {
+    return Promise.reject(new Error("not used"));
+  }
+
+  public getPatch(): Promise<CandidatePatch> {
+    return Promise.reject(new Error("not used"));
+  }
+
+  public getFilePatch(): Promise<CandidateFilePatch> {
+    return Promise.reject(new Error("not used"));
+  }
+
+  public async removeWorktree(
+    _project: OrchestratorConfig["projects"][string],
+    worktreePath: string,
+  ): Promise<void> {
+    fs.rmSync(worktreePath, { recursive: true, force: true });
+    await Promise.resolve();
+  }
+
+  public prepareCommit(): Promise<PreparedCommit> {
+    return Promise.reject(new Error("not used"));
+  }
+
+  public integrate(): Promise<void> {
+    return Promise.reject(new Error("not used"));
+  }
+}
+
+function config(temporary: string): OrchestratorConfig {
+  return {
+    version: CONFIG_VERSION,
+    defaultProject: "example",
+    runtime: { gitCommand: process.execPath },
+    workers: {
+      implementation: {
+        adapter: "cursor",
+        command: process.execPath,
+        args: [],
+        model: "implementation-model",
+        shellAllow: [],
+      },
+      review: {
+        adapter: "antigravity",
+        command: process.execPath,
+        args: [],
+        model: "review-model",
+        shellAllow: [],
+      },
+    },
+    routing: {
+      normal: { implementation: "implementation", review: "review" },
+      high: { implementation: "implementation", review: "review" },
+      critical: { implementation: "implementation", review: "review" },
+    },
+    projects: {
+      example: {
+        repository: path.join(temporary, "repository"),
+        targetBranch: "main",
+        worktreeRoot: path.join(temporary, "worktrees"),
+        instructionFiles: [],
+        gates: {
+          affected: [
+            {
+              id: "unit",
+              command: process.execPath,
+              args: ["--version"],
+              dependsOn: [],
+              timeoutMinutes: 1,
+            },
+          ],
+          acceptance: {
+            id: "acceptance",
+            command: process.execPath,
+            args: ["--version"],
+            dependsOn: ["unit"],
+            timeoutMinutes: 1,
+          },
+        },
+      },
+    },
+    budgets: DEFAULT_BUDGETS,
+    logging: { maxBytes: 64_000, retentionDays: 14 },
+  };
+}
+
+void test("control service creates one Task with an atomic lease and rejects stale decisions", async () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "orchestrator-control-"));
+  const configuration = config(temporary);
+  const project = configuration.projects.example;
+  assert.ok(project);
+  fs.mkdirSync(project.repository, { recursive: true });
+  const configRepository = new ConfigFileRepository(path.join(temporary, "config.json"));
+  configRepository.write(configuration);
+  const store = new SqliteTaskStore(path.join(temporary, "state.db"));
+  const runtime = new SqliteRuntimeRegistry(path.join(temporary, "state.db"));
+  const launcher = new FakeLauncher();
+  const control = new ControlService(
+    configRepository,
+    store,
+    new FakeCandidates(project),
+    launcher,
+    runtime,
+    new ProductionLogger(path.join(temporary, "events.jsonl"), 64_000),
+  );
+  try {
+    const task = await control.start({
+      objective: "Implement one stable production Task",
+      risk: "normal",
+      initialScope: ["src"],
+    });
+    assert.equal(task.state, "CREATED");
+    assert.equal(store.writerLeaseOwner("example"), task.id);
+    assert.deepEqual(launcher.launched, [task.id]);
+    const observation = await control.observe(task.id);
+    assert.equal(observation.changed, true);
+    assert.deepEqual(observation.legalDecisions, ["cancel"]);
+    await assert.rejects(
+      async () =>
+        await control.decide({
+          action: "cancel",
+          taskId: task.id,
+          expectedRevision: task.revision + 1,
+          reason: "stale",
+        }),
+      (error: unknown) =>
+        error instanceof OrchestratorError && error.code === "TASK_REVISION_CONFLICT",
+    );
+    const reconciliation = await control.reconcile();
+    assert.deepEqual(reconciliation.blockedTasks, [task.id]);
+    const blocked = control.get(task.id);
+    assert.equal(blocked.state, "EXTERNAL_BLOCKED");
+    const cancelled = await control.decide({
+      action: "cancel",
+      taskId: task.id,
+      expectedRevision: blocked.revision,
+      reason: "operator cancellation",
+    });
+    assert.equal(cancelled.state, "CANCELLED");
+    assert.equal(store.writerLeaseOwner("example"), undefined);
+  } finally {
+    runtime.close();
+    store.close();
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
+});

@@ -94,6 +94,8 @@ export class ZcodeAdapter implements WorkerAdapter {
             timeoutMs: request.timeoutMs,
             maxCaptureBytes: request.maxCaptureBytes,
             ...(request.signal ? { signal: request.signal } : {}),
+            ...(request.onProcessSpawn ? { onSpawn: request.onProcessSpawn } : {}),
+            ...(request.onProcessExit ? { onExit: request.onProcessExit } : {}),
           },
         );
       },

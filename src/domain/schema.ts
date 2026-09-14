@@ -93,6 +93,8 @@ const DeliverySchema = z
   .object({
     candidateFingerprint: FingerprintSchema,
     idempotencyKey: z.string().min(8),
+    commitMessage: z.string().min(3).max(500),
+    pushRequested: z.boolean(),
     status: z.enum(["running", "committed", "failed"]),
     startedAt: TimestampSchema,
     finishedAt: TimestampSchema.optional(),
@@ -152,6 +154,9 @@ export const TaskAggregateSchema = z
     projectId: z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/),
     objective: z.string().min(8),
     risk: z.enum(["normal", "high", "critical"]),
+    executionProfileFingerprint: FingerprintSchema,
+    implementationWorkerId: z.string().min(1),
+    reviewWorkerId: z.string().min(1),
     state: z.enum(TASK_STATES),
     revision: z.number().int().positive(),
     createdAt: TimestampSchema,

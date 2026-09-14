@@ -65,10 +65,14 @@ export class SqliteTaskStore implements TaskStore {
   }
 
   public saveAndReleaseWriterLease(expectedRevision: number, result: TransitionResult): void {
-    this.transactionalPersist(result, () => {
-      this.persistStatements(expectedRevision, result);
-      this.releaseWriterLease(result.task.projectId, result.task.id);
-    }, false);
+    this.transactionalPersist(
+      result,
+      () => {
+        this.persistStatements(expectedRevision, result);
+        this.releaseWriterLease(result.task.projectId, result.task.id);
+      },
+      false,
+    );
   }
 
   public get(taskId: string): TaskAggregate {
@@ -168,9 +172,13 @@ export class SqliteTaskStore implements TaskStore {
   }
 
   private persist(expectedRevision: number | undefined, result: TransitionResult): void {
-    this.transactionalPersist(result, () => {
-      this.persistStatements(expectedRevision, result);
-    }, false);
+    this.transactionalPersist(
+      result,
+      () => {
+        this.persistStatements(expectedRevision, result);
+      },
+      false,
+    );
   }
 
   private transactionalPersist(
@@ -220,7 +228,9 @@ export class SqliteTaskStore implements TaskStore {
         .run(task.state, task.revision, aggregateJson, task.updatedAt, task.id, expectedRevision);
       if (updated.changes !== 1) {
         const actual = this.database
-          .prepare<[string], { readonly revision: number }>("SELECT revision FROM tasks WHERE id = ?")
+          .prepare<[string], { readonly revision: number }>(
+            "SELECT revision FROM tasks WHERE id = ?",
+          )
           .get(task.id)?.revision;
         throw new OrchestratorError("TASK_REVISION_CONFLICT", "Task revision is stale", {
           taskId: task.id,

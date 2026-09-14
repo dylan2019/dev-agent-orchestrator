@@ -6,6 +6,8 @@ export interface ProcessRunOptions {
   readonly env?: NodeJS.ProcessEnv;
   readonly stdin?: string | Buffer;
   readonly signal?: AbortSignal;
+  readonly onSpawn?: (pid: number) => void | Promise<void>;
+  readonly onExit?: (pid: number) => void | Promise<void>;
   readonly onStdout?: (chunk: Buffer) => void;
   readonly onStderr?: (chunk: Buffer) => void;
 }

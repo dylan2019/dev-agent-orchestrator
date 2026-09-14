@@ -99,6 +99,8 @@ export interface IndependentReview {
 export interface Delivery {
   readonly candidateFingerprint: string;
   readonly idempotencyKey: string;
+  readonly commitMessage: string;
+  readonly pushRequested: boolean;
   readonly status: "running" | "committed" | "failed";
   readonly startedAt: string;
   readonly finishedAt?: string;
@@ -120,6 +122,9 @@ export interface TaskAggregate {
   readonly projectId: string;
   readonly objective: string;
   readonly risk: RiskLevel;
+  readonly executionProfileFingerprint: string;
+  readonly implementationWorkerId: string;
+  readonly reviewWorkerId: string;
   readonly state: TaskState;
   readonly revision: number;
   readonly createdAt: string;

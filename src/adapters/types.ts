@@ -17,6 +17,8 @@ export interface WorkerExecutionRequest {
   readonly timeoutMs: number;
   readonly maxCaptureBytes: number;
   readonly signal?: AbortSignal;
+  readonly onProcessSpawn?: (pid: number) => void | Promise<void>;
+  readonly onProcessExit?: (pid: number) => void | Promise<void>;
 }
 
 export interface ReviewExecutionRequest extends WorkerExecutionRequest {

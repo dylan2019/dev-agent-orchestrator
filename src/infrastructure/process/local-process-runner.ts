@@ -144,7 +144,11 @@ export class LocalProcessRunner implements ProcessRunner {
         clearTimeout(timer);
         options.signal?.removeEventListener("abort", abort);
         reject(
-          wrapError("PROCESS_EXECUTION_FAILED", "Unable to execute process", error, { command }),
+          wrapError("PROCESS_EXECUTION_FAILED", "Unable to execute process", error, {
+            command,
+            cause:
+              error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500),
+          }),
         );
       };
       const abort = (): void => {
@@ -159,6 +163,15 @@ export class LocalProcessRunner implements ProcessRunner {
           terminateProcessTree(child.pid);
         }
       }, options.timeoutMs);
+      const spawnReady =
+        child.pid === undefined
+          ? Promise.reject(new Error("Process ID is unavailable"))
+          : Promise.resolve(options.onSpawn?.(child.pid)).catch((error: unknown) => {
+              if (child.pid !== undefined) {
+                terminateProcessTree(child.pid);
+              }
+              throw error;
+            });
 
       child.once("error", finishError);
       options.signal?.addEventListener("abort", abort, { once: true });
@@ -170,7 +183,11 @@ export class LocalProcessRunner implements ProcessRunner {
           finishError(new Error("stdin pipe is unavailable"));
           return;
         }
-        child.stdin.once("error", finishError);
+        child.stdin.once("error", (error: NodeJS.ErrnoException) => {
+          if (error.code !== "EPIPE") {
+            finishError(error);
+          }
+        });
         child.stdin.end(options.stdin);
       }
       if (!child.stdout || !child.stderr) {
@@ -202,21 +219,31 @@ export class LocalProcessRunner implements ProcessRunner {
         if (settled) {
           return;
         }
-        settled = true;
-        clearTimeout(timer);
-        options.signal?.removeEventListener("abort", abort);
-        resolve({
-          exitCode: code ?? -1,
-          stdout: Buffer.concat(stdout.chunks).toString("utf8"),
-          stderr: Buffer.concat(stderr.chunks).toString("utf8"),
-          stdoutBytes,
-          stderrBytes,
-          stdoutTruncated: stdoutBytes > stdout.retainedBytes,
-          stderrTruncated: stderrBytes > stderr.retainedBytes,
-          timedOut,
-          cancelled,
-          durationMs: Date.now() - startedAt,
-        });
+        void spawnReady
+          .then(async () => {
+            if (child.pid !== undefined) {
+              await options.onExit?.(child.pid);
+            }
+            if (settled) {
+              return;
+            }
+            settled = true;
+            clearTimeout(timer);
+            options.signal?.removeEventListener("abort", abort);
+            resolve({
+              exitCode: code ?? -1,
+              stdout: Buffer.concat(stdout.chunks).toString("utf8"),
+              stderr: Buffer.concat(stderr.chunks).toString("utf8"),
+              stdoutBytes,
+              stderrBytes,
+              stdoutTruncated: stdoutBytes > stdout.retainedBytes,
+              stderrTruncated: stderrBytes > stderr.retainedBytes,
+              timedOut,
+              cancelled,
+              durationMs: Date.now() - startedAt,
+            });
+          })
+          .catch(finishError);
       });
     });
   }

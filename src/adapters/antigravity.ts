@@ -98,6 +98,8 @@ export class AntigravityAdapter implements WorkerAdapter {
         maxCaptureBytes: request.maxCaptureBytes,
         stdin: `${JSON.stringify({ event: "user", message: { content: prompt } })}\n`,
         ...(request.signal ? { signal: request.signal } : {}),
+        ...(request.onProcessSpawn ? { onSpawn: request.onProcessSpawn } : {}),
+        ...(request.onProcessExit ? { onExit: request.onProcessExit } : {}),
       },
     );
   }

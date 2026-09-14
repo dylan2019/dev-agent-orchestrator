@@ -32,7 +32,19 @@ function transitioned(
   state: TaskState,
   occurredAt: string,
   type: string,
-  changes: Partial<Omit<TaskAggregate, "id" | "projectId" | "objective" | "risk" | "budget">>,
+  changes: Partial<
+    Omit<
+      TaskAggregate,
+      | "id"
+      | "projectId"
+      | "objective"
+      | "risk"
+      | "budget"
+      | "executionProfileFingerprint"
+      | "implementationWorkerId"
+      | "reviewWorkerId"
+    >
+  >,
   payload: Readonly<Record<string, unknown>> = {},
 ): TransitionResult {
   const task: TaskAggregate = {
@@ -64,6 +76,9 @@ export function createTask(input: {
   readonly projectId: string;
   readonly objective: string;
   readonly risk: RiskLevel;
+  readonly executionProfileFingerprint: string;
+  readonly implementationWorkerId: string;
+  readonly reviewWorkerId: string;
   readonly budget: ExecutionBudget;
   readonly initialScope: readonly string[];
   readonly occurredAt: string;
@@ -76,6 +91,15 @@ export function createTask(input: {
   );
   const objective = input.objective.trim();
   assertDomain(objective.length >= 8, "INVALID_OBJECTIVE", "Objective is too short");
+  const executionProfileFingerprint = requireFingerprint(
+    input.executionProfileFingerprint,
+    "Execution Profile fingerprint",
+  );
+  assertDomain(
+    input.implementationWorkerId !== input.reviewWorkerId,
+    "INDEPENDENT_REVIEWER_REQUIRED",
+    "Implementation and review Worker IDs must be different",
+  );
   const paths = normalizeAuthorizedPaths(input.initialScope);
   const initialGrant: ScopeGrant = {
     revision: 1,
@@ -89,6 +113,9 @@ export function createTask(input: {
     projectId: input.projectId,
     objective,
     risk: input.risk,
+    executionProfileFingerprint,
+    implementationWorkerId: input.implementationWorkerId,
+    reviewWorkerId: input.reviewWorkerId,
     state: "CREATED",
     revision: 1,
     createdAt: input.occurredAt,
@@ -443,7 +470,14 @@ export function requireRework(
 ): TransitionResult {
   requireState(
     task,
-    ["IMPLEMENTING", "VERIFYING", "AWAITING_CONTROL_REVIEW", "INDEPENDENT_REVIEWING", "ACCEPTING"],
+    [
+      "IMPLEMENTING",
+      "VERIFYING",
+      "AWAITING_CONTROL_REVIEW",
+      "INDEPENDENT_REVIEWING",
+      "AWAITING_FINAL_APPROVAL",
+      "ACCEPTING",
+    ],
     "require rework",
   );
   const reason = input.reason.trim();
@@ -485,6 +519,8 @@ export function approveDelivery(
   input: {
     readonly expectedCandidateFingerprint: string;
     readonly idempotencyKey: string;
+    readonly commitMessage: string;
+    readonly push: boolean;
     readonly occurredAt: string;
   },
 ): TransitionResult {
@@ -501,9 +537,13 @@ export function approveDelivery(
     "INVALID_IDEMPOTENCY_KEY",
     "Delivery idempotency key is invalid",
   );
+  const commitMessage = input.commitMessage.trim();
+  assertDomain(commitMessage.length >= 3, "INVALID_COMMIT_MESSAGE", "Commit message is invalid");
   const delivery: Delivery = {
     candidateFingerprint: candidate.fingerprint,
     idempotencyKey: input.idempotencyKey,
+    commitMessage,
+    pushRequested: input.push,
     status: "running",
     startedAt: input.occurredAt,
   };
@@ -513,7 +553,11 @@ export function approveDelivery(
     input.occurredAt,
     "delivery.started",
     { delivery },
-    { candidateFingerprint: candidate.fingerprint, idempotencyKey: input.idempotencyKey },
+    {
+      candidateFingerprint: candidate.fingerprint,
+      idempotencyKey: input.idempotencyKey,
+      push: input.push,
+    },
   );
 }
 
@@ -556,7 +600,7 @@ export function completeDelivery(
 export function blockExternally(task: TaskAggregate, block: ExternalBlock): TransitionResult {
   requireState(
     task,
-    ["SCOPING", "IMPLEMENTING", "VERIFYING", "INDEPENDENT_REVIEWING", "ACCEPTING"],
+    ["CREATED", "SCOPING", "IMPLEMENTING", "VERIFYING", "INDEPENDENT_REVIEWING", "ACCEPTING"],
     "block task",
   );
   assertDomain(

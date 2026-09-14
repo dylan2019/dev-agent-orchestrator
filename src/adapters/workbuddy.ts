@@ -87,6 +87,8 @@ export class WorkbuddyAdapter implements WorkerAdapter {
         maxCaptureBytes: request.maxCaptureBytes,
         stdin: prompt,
         ...(request.signal ? { signal: request.signal } : {}),
+        ...(request.onProcessSpawn ? { onSpawn: request.onProcessSpawn } : {}),
+        ...(request.onProcessExit ? { onExit: request.onProcessExit } : {}),
       },
     );
   }

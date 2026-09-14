@@ -29,6 +29,9 @@ function task(): TaskAggregate {
     projectId: "example",
     objective: "Implement the requested production behavior",
     risk: "normal",
+    executionProfileFingerprint: "f".repeat(64),
+    implementationWorkerId: "implementation",
+    reviewWorkerId: "review",
     budget: DEFAULT_BUDGETS.normal,
     initialScope: ["src"],
     occurredAt: AT,
@@ -81,6 +84,8 @@ void test("Task follows control review before independent review and delivery", 
   current = approveDelivery(current, {
     expectedCandidateFingerprint: FIRST,
     idempotencyKey: "delivery:example:1",
+    commitMessage: "feat: deliver candidate",
+    push: true,
     occurredAt: AT,
   }).task;
   current = completeDelivery(current, {
