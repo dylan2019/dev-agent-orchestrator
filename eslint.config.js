@@ -3,7 +3,11 @@ import tseslint from "typescript-eslint";
 
 export default tseslint.config(
   { ignores: ["dist/**", "node_modules/**", ".runtime/**"] },
-  { ...eslint.configs.recommended, files: ["**/*.{js,mjs}"] },
+  {
+    ...eslint.configs.recommended,
+    files: ["**/*.{js,mjs}"],
+    languageOptions: { globals: { process: "readonly" } },
+  },
   ...tseslint.configs.strictTypeChecked.map((config) => ({ ...config, files: ["**/*.ts"] })),
   ...tseslint.configs.stylisticTypeChecked.map((config) => ({ ...config, files: ["**/*.ts"] })),
   {

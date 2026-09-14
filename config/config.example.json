@@ -1,0 +1,94 @@
+{
+  "version": "1.0.0",
+  "defaultProject": "example",
+  "runtime": {
+    "gitCommand": "/usr/bin/git"
+  },
+  "workers": {
+    "implementation": {
+      "command": "/usr/local/bin/cursor-agent",
+      "args": [],
+      "adapter": "cursor",
+      "model": "implementation-model",
+      "shellAllow": []
+    },
+    "review": {
+      "command": "/usr/local/bin/agy",
+      "args": [],
+      "adapter": "antigravity",
+      "model": "review-model",
+      "reasoningEffort": "high",
+      "shellAllow": []
+    }
+  },
+  "routing": {
+    "normal": { "implementation": "implementation", "review": "review" },
+    "high": { "implementation": "implementation", "review": "review" },
+    "critical": { "implementation": "implementation", "review": "review" }
+  },
+  "projects": {
+    "example": {
+      "repository": "/absolute/path/to/repository",
+      "targetBranch": "main",
+      "worktreeRoot": "/absolute/path/to/repository-worktrees",
+      "instructionFiles": ["AGENTS.md", "README.md"],
+      "gates": {
+        "affected": [
+          {
+            "command": "/usr/bin/git",
+            "args": ["diff", "--check", "HEAD"],
+            "id": "diff-check",
+            "dependsOn": [],
+            "timeoutMinutes": 5
+          }
+        ],
+        "acceptance": {
+          "command": "/bin/bash",
+          "args": ["acceptance-ci.sh"],
+          "id": "acceptance",
+          "dependsOn": ["diff-check"],
+          "timeoutMinutes": 180
+        }
+      }
+    }
+  },
+  "budgets": {
+    "normal": {
+      "maxWallClockMinutes": 60,
+      "maxAttempts": 3,
+      "maxWorkerRuns": 3,
+      "maxReviewerRuns": 2,
+      "maxToolEvents": 400,
+      "maxCapturedBytes": 2000000,
+      "maxNoCandidateChangeMinutes": 10,
+      "maxChangedFiles": 30,
+      "maxChangedLines": 2000
+    },
+    "high": {
+      "maxWallClockMinutes": 90,
+      "maxAttempts": 3,
+      "maxWorkerRuns": 3,
+      "maxReviewerRuns": 2,
+      "maxToolEvents": 600,
+      "maxCapturedBytes": 2000000,
+      "maxNoCandidateChangeMinutes": 10,
+      "maxChangedFiles": 20,
+      "maxChangedLines": 1500
+    },
+    "critical": {
+      "maxWallClockMinutes": 120,
+      "maxAttempts": 3,
+      "maxWorkerRuns": 3,
+      "maxReviewerRuns": 3,
+      "maxToolEvents": 800,
+      "maxCapturedBytes": 2000000,
+      "maxNoCandidateChangeMinutes": 10,
+      "maxChangedFiles": 15,
+      "maxChangedLines": 1000
+    }
+  },
+  "logging": {
+    "maxBytes": 2000000,
+    "retentionDays": 14
+  }
+}

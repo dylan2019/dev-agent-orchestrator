@@ -2,5 +2,5 @@ dist/
 node_modules/
 .runtime/
 package-lock.json
+config/orchestrator.schema.json
 LICENSE
-
