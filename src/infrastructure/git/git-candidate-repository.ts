@@ -469,7 +469,8 @@ export class GitCandidateRepository implements CandidateRepository {
     maxCaptureBytes = MAX_GIT_OUTPUT,
     captureMode: "head" | "tail" = "tail",
   ): Promise<ProcessRunResult> {
-    const result = await this.processes.run(this.gitCommand, args, {
+    const gitArgs = process.platform === "win32" ? ["-c", "core.longpaths=true", ...args] : args;
+    const result = await this.processes.run(this.gitCommand, gitArgs, {
       cwd,
       timeoutMs: 60_000,
       maxCaptureBytes,

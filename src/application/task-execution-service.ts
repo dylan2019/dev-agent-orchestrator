@@ -82,6 +82,9 @@ export class TaskExecutionService {
       model: binding.implementationWorker.model,
       occurredAt: now(),
     });
+    if (started.task.state === "EXHAUSTED") {
+      return this.persistExhausted(initial, started);
+    }
     this.persist(initial, started);
     let task = started.task;
     const worktreePath = path.resolve(binding.project.worktreeRoot, task.id);
@@ -238,6 +241,9 @@ export class TaskExecutionService {
       model: binding.reviewWorker.model,
       occurredAt: now(),
     });
+    if (started.task.state === "EXHAUSTED") {
+      return this.persistExhausted(initial, started);
+    }
     this.persist(initial, started);
     const task = started.task;
     const attempt = task.attempts.at(-1);
@@ -438,5 +444,25 @@ export class TaskExecutionService {
       state: transition.task.state,
       operation: transition.event.type,
     });
+  }
+
+  private persistExhausted(previous: TaskAggregate, transition: TransitionResult): TaskAggregate {
+    this.store.saveAndReleaseWriterLease(previous.revision, transition);
+    this.logger.write({
+      level: "warn",
+      event: "state.changed",
+      taskId: transition.task.id,
+      projectId: transition.task.projectId,
+      state: transition.task.state,
+      operation: transition.event.type,
+    });
+    this.logger.write({
+      level: "info",
+      event: "lease.released",
+      taskId: transition.task.id,
+      projectId: transition.task.projectId,
+      state: transition.task.state,
+    });
+    return transition.task;
   }
 }

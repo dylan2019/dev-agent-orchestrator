@@ -13,10 +13,16 @@ const BudgetSchema = z
     maxToolEvents: z.number().int().positive(),
     maxCapturedBytes: z.number().int().positive(),
     maxNoCandidateChangeMinutes: z.number().int().positive(),
-    maxChangedFiles: z.number().int().positive(),
-    maxChangedLines: z.number().int().positive(),
+    maxChangedFiles: z.number().int().positive().optional(),
+    maxChangedLines: z.number().int().positive().optional(),
   })
-  .strict();
+  .strict()
+  .transform((budget) => {
+    const normalized = { ...budget };
+    delete normalized.maxChangedFiles;
+    delete normalized.maxChangedLines;
+    return normalized;
+  });
 const ScopeGrantSchema = z
   .object({
     revision: z.number().int().positive(),
@@ -47,6 +53,7 @@ const AttemptSchema = z
     startedAt: TimestampSchema,
     finishedAt: TimestampSchema.optional(),
     errorCode: z.string().min(1).optional(),
+    exitCode: z.number().int().optional(),
   })
   .strict();
 const CandidateSchema = z
@@ -123,7 +130,11 @@ const ExternalBlockSchema = z
     blockedAt: TimestampSchema,
     resumeState: z.enum(
       TASK_STATES.filter(
-        (state) => state !== "EXTERNAL_BLOCKED" && state !== "COMMITTED" && state !== "CANCELLED",
+        (state) =>
+          state !== "EXTERNAL_BLOCKED" &&
+          state !== "COMMITTED" &&
+          state !== "CANCELLED" &&
+          state !== "EXHAUSTED",
       ) as [
         (
           | "CREATED"

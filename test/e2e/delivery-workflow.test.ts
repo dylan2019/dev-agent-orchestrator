@@ -131,7 +131,7 @@ async function waitForState(
     if (current.state === expected) {
       return current;
     }
-    if (["REWORK_REQUIRED", "EXTERNAL_BLOCKED", "CANCELLED"].includes(current.state)) {
+    if (["REWORK_REQUIRED", "EXTERNAL_BLOCKED", "CANCELLED", "EXHAUSTED"].includes(current.state)) {
       throw new Error(
         `Task entered ${current.state}: ${current.reworkReason ?? current.externalBlock?.message ?? "unknown"}`,
       );
@@ -241,7 +241,13 @@ void test("clean public workflow delivers one Task without Candidate replay or n
       /Create one delivered|implemented candidate|PRIVATE|thinking|assistant/,
     );
   } finally {
-    if (runtime && task && task.state !== "COMMITTED" && task.state !== "CANCELLED") {
+    if (
+      runtime &&
+      task &&
+      task.state !== "COMMITTED" &&
+      task.state !== "CANCELLED" &&
+      task.state !== "EXHAUSTED"
+    ) {
       try {
         const current = runtime.control.get(task.id);
         await runtime.control.decide({
@@ -265,7 +271,7 @@ void test("clean public workflow delivers one Task without Candidate replay or n
   }
 });
 
-void test("scope expansion continues the same Task and Candidate Worktree", async () => {
+void test("scope expansion continues one Task and releases its lease when attempts exhaust", async () => {
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "orchestrator-scope-e2e-"));
   const repository = path.join(temporary, "repository");
   const home = path.join(temporary, "home");
@@ -280,9 +286,14 @@ void test("scope expansion continues the same Task and Candidate Worktree", asyn
     await git(repository, ["add", "README.md"]);
     await git(repository, ["commit", "-m", "test: baseline"]);
     const workers = writeWorkers(temporary, true);
-    new ConfigFileRepository(path.join(home, "config.json")).write(
-      config(temporary, repository, workers),
-    );
+    const profile = config(temporary, repository, workers);
+    new ConfigFileRepository(path.join(home, "config.json")).write({
+      ...profile,
+      budgets: {
+        ...profile.budgets,
+        normal: { ...profile.budgets.normal, maxAttempts: 2, maxWorkerRuns: 2 },
+      },
+    });
     const runnerFile = path.resolve(
       import.meta.dirname,
       "..",
@@ -324,16 +335,28 @@ void test("scope expansion continues the same Task and Candidate Worktree", asyn
     assert.equal(task.id, originalTaskId);
     assert.equal(task.scopeGrants.length, 2);
     assert.equal(task.attempts.filter((attempt) => attempt.kind === "implementation").length, 2);
-    const current = activeRuntime.control.get(task.id);
     task = await activeRuntime.control.decide({
-      action: "cancel",
-      taskId: current.id,
-      expectedRevision: current.revision,
-      reason: "scope E2E completed",
+      action: "request_rework",
+      taskId: task.id,
+      expectedRevision: task.revision,
+      reason: "Check bounded retry after two implementation Attempts",
     });
-    assert.equal(task.state, "CANCELLED");
+    task = await waitForState(
+      async (revision) => await activeRuntime.control.observe(taskIdValue, revision, 5_000),
+      task,
+      "EXHAUSTED",
+    );
+    assert.equal(activeRuntime.components.store.writerLeaseOwner("example"), undefined);
+    assert.equal(fs.existsSync(path.join(temporary, "worktrees", task.id)), true);
+    assert.equal(task.attempts.filter((attempt) => attempt.kind === "implementation").length, 2);
   } finally {
-    if (runtime && task && task.state !== "COMMITTED" && task.state !== "CANCELLED") {
+    if (
+      runtime &&
+      task &&
+      task.state !== "COMMITTED" &&
+      task.state !== "CANCELLED" &&
+      task.state !== "EXHAUSTED"
+    ) {
       try {
         const current = runtime.control.get(task.id);
         await runtime.control.decide({

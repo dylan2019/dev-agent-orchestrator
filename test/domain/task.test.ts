@@ -12,27 +12,28 @@ import {
   recordCandidate,
   recordControlReview,
   recordIndependentReview,
+  requireRework,
   requestScopeApproval,
   startIndependentReviewAttempt,
   startImplementation,
 } from "../../src/domain/task.js";
-import type { TaskAggregate } from "../../src/domain/types.js";
+import type { RiskLevel, TaskAggregate } from "../../src/domain/types.js";
 
 const AT = "2026-09-14T06:00:00.000Z";
 const BASE = "1".repeat(40);
 const FIRST = "a".repeat(64);
 const SECOND = "b".repeat(64);
 
-function task(): TaskAggregate {
+function task(risk: RiskLevel = "normal"): TaskAggregate {
   return createTask({
     id: "task-20260914-aaaaaaaa",
     projectId: "example",
     objective: "Implement the requested production behavior",
-    risk: "normal",
+    risk,
     executionProfileFingerprint: "f".repeat(64),
     implementationWorkerId: "implementation",
     reviewWorkerId: "review",
-    budget: DEFAULT_BUDGETS.normal,
+    budget: DEFAULT_BUDGETS[risk],
     initialScope: ["src"],
     occurredAt: AT,
   }).task;
@@ -88,6 +89,17 @@ void test("Task follows control review before independent review and delivery", 
     push: true,
     occurredAt: AT,
   }).task;
+  const failedAcceptance = requireRework(current, {
+    reason: "Acceptance Gate exited nonzero",
+    errorCode: "GATE_EXIT_NONZERO",
+    occurredAt: AT,
+  }).task;
+  assert.equal(failedAcceptance.state, "REWORK_REQUIRED");
+  const failedDelivery = failedAcceptance.delivery;
+  assert.ok(failedDelivery);
+  assert.equal(failedDelivery.status, "failed");
+  assert.equal(failedDelivery.finishedAt, AT);
+  assert.equal(failedDelivery.errorCode, "GATE_EXIT_NONZERO");
   current = completeDelivery(current, {
     candidateFingerprint: FIRST,
     commitHash: "2".repeat(40),
@@ -134,8 +146,8 @@ void test("scope expansion preserves the Task and appends an auditable grant", (
   assert.equal(current.attempts[1]?.scopeRevision, 2);
 });
 
-void test("stale decisions, oversized candidates, and illegal ordering fail closed", () => {
-  let current = startImplementation(task(), {
+void test("large in-scope Candidates remain reviewable while stale decisions fail closed", () => {
+  let current = startImplementation(task("high"), {
     executorId: "cursor",
     model: "implementation-model",
     occurredAt: AT,
@@ -154,10 +166,11 @@ void test("stale decisions, oversized candidates, and illegal ordering fail clos
   current = recordCandidate(current, {
     baseCommit: BASE,
     fingerprint: FIRST,
-    changedFiles: ["src/task.ts"],
-    changedLines: 1,
+    changedFiles: Array.from({ length: 25 }, (_, index) => `src/task-${String(index)}.ts`),
+    changedLines: 1_600,
     occurredAt: AT,
   }).task;
+  assert.equal(current.candidate?.changedFiles.length, 25);
   assert.throws(
     () =>
       recordControlReview(current, {
@@ -183,4 +196,29 @@ void test("stale decisions, oversized candidates, and illegal ordering fail clos
       }),
     (error: unknown) => error instanceof DomainError && error.code === "STALE_CANDIDATE_DECISION",
   );
+});
+
+void test("exhausted implementation budget terminates the Task without replacing its evidence", () => {
+  const limited: TaskAggregate = {
+    ...task(),
+    budget: { ...DEFAULT_BUDGETS.normal, maxAttempts: 1, maxWorkerRuns: 1 },
+  };
+  let current = startImplementation(limited, {
+    executorId: "implementation",
+    model: "implementation-model",
+    occurredAt: AT,
+  }).task;
+  current = requireRework(current, {
+    reason: "Implementation attempt failed",
+    errorCode: "WORKER_FAILED",
+    occurredAt: AT,
+  }).task;
+  const exhausted = startImplementation(current, {
+    executorId: "implementation",
+    model: "implementation-model",
+    occurredAt: AT,
+  }).task;
+  assert.equal(exhausted.state, "EXHAUSTED");
+  assert.equal(exhausted.attempts.length, 1);
+  assert.equal(exhausted.reworkReason, "Implementation attempt budget exhausted");
 });

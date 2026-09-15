@@ -5,6 +5,8 @@ import path from "node:path";
 import test from "node:test";
 
 import { ControlService } from "../../src/application/control-service.js";
+import { DoctorService } from "../../src/application/doctor-service.js";
+import type { WorkerAdapterRegistry } from "../../src/adapters/registry.js";
 import type {
   CandidateFilePatch,
   CandidateInspection,
@@ -17,6 +19,7 @@ import type { RunnerLauncher } from "../../src/application/ports/runner-launcher
 import { ConfigFileRepository } from "../../src/configuration/file-repository.js";
 import { CONFIG_VERSION, type OrchestratorConfig } from "../../src/configuration/schema.js";
 import { DEFAULT_BUDGETS } from "../../src/domain/budgets.js";
+import { createTask } from "../../src/domain/task.js";
 import { ProductionLogger } from "../../src/infrastructure/logging/production-logger.js";
 import { LocalProcessSupervisor } from "../../src/infrastructure/process/local-process-supervisor.js";
 import { SqliteRuntimeRegistry } from "../../src/infrastructure/sqlite/runtime-registry.js";
@@ -190,7 +193,10 @@ void test("control service creates one Task with an atomic lease and rejects sta
       (error: unknown) =>
         error instanceof OrchestratorError && error.code === "TASK_REVISION_CONFLICT",
     );
-    const reconciliation = await control.reconcile();
+    const startupReconciliation = await control.reconcile();
+    assert.deepEqual(startupReconciliation.blockedTasks, []);
+    assert.equal(control.get(task.id).state, "CREATED");
+    const reconciliation = await control.reconcile(Date.now() + 60_000);
     assert.deepEqual(reconciliation.blockedTasks, [task.id]);
     const blocked = control.get(task.id);
     assert.equal(blocked.state, "EXTERNAL_BLOCKED");
@@ -249,6 +255,49 @@ void test("control service accepts canonical Git roots reached through a filesys
     assert.equal(cancelled.state, "CANCELLED");
   } finally {
     runtime.close();
+    store.close();
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
+void test("doctor reports a leased Task whose Candidate Worktree is missing", async () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "orchestrator-missing-worktree-"));
+  const configuration = config(temporary);
+  const project = configuration.projects.example;
+  assert.ok(project);
+  fs.mkdirSync(project.repository, { recursive: true });
+  const configRepository = new ConfigFileRepository(path.join(temporary, "config.json"));
+  configRepository.write(configuration);
+  const store = new SqliteTaskStore(path.join(temporary, "state.db"));
+  const created = createTask({
+    id: "task-missing-worktree-0001",
+    projectId: "example",
+    objective: "Diagnose a missing leased Candidate Worktree",
+    risk: "normal",
+    executionProfileFingerprint: "f".repeat(64),
+    implementationWorkerId: "implementation",
+    reviewWorkerId: "review",
+    budget: DEFAULT_BUDGETS.normal,
+    initialScope: ["src"],
+    occurredAt: "2026-09-15T06:00:00.000Z",
+  });
+  store.createWithWriterLease(created, created.task.createdAt);
+  const adapters = {
+    get: () => ({
+      probe: async () => await Promise.resolve({ modelAvailable: true }),
+    }),
+  } as unknown as WorkerAdapterRegistry;
+  try {
+    const doctor = new DoctorService(
+      configRepository,
+      new FakeCandidates(project),
+      adapters,
+      store,
+    );
+    const report = await doctor.run("example");
+    assert.equal(report.ok, false);
+    assert.ok(report.issues.some((issue) => issue.code === "CANDIDATE_WORKTREE_MISSING"));
+  } finally {
     store.close();
     fs.rmSync(temporary, { recursive: true, force: true });
   }

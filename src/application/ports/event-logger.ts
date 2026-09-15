@@ -33,6 +33,7 @@ export interface ProductionLogEvent {
   readonly durationMs?: number;
   readonly outcome?: "started" | "pass" | "fail" | "blocked" | "cancelled" | "committed";
   readonly errorCode?: string;
+  readonly exitCode?: number;
   readonly message?: string;
   readonly toolEvents?: number;
   readonly capturedBytes?: number;

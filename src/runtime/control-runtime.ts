@@ -21,6 +21,7 @@ export function createControlRuntime(runnerFile: string, home?: string) {
       components.configRepository,
       components.candidates,
       components.adapters,
+      components.store,
     ),
     close: () => components.close(),
   };

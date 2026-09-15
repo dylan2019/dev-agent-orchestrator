@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 
 import { createControlRuntime } from "../dist/src/runtime/control-runtime.js";
@@ -33,7 +34,15 @@ async function wait(expected) {
     if (observation.changed) {
       process.stdout.write(`${JSON.stringify({ state: task.state, revision: task.revision })}\n`);
     }
-    if (["EXTERNAL_BLOCKED", "REWORK_REQUIRED", "CANCELLED"].includes(task.state)) {
+    if (
+      [
+        "EXTERNAL_BLOCKED",
+        "REWORK_REQUIRED",
+        "SCOPE_APPROVAL_REQUIRED",
+        "CANCELLED",
+        "EXHAUSTED",
+      ].includes(task.state)
+    ) {
       throw new LiveSmokeError("TASK_STOPPED", `Smoke Task stopped in ${task.state}`);
     }
   }
@@ -83,9 +92,24 @@ try {
     idempotencyKey: `smoke:${task.id}`,
   });
   await wait("COMMITTED");
+  const config = runtime.components.configRepository.read();
+  const repository = config.projects[task.projectId]?.repository;
+  const deliveredFile = repository ? path.join(repository, "smoke.txt") : undefined;
+  if (
+    !deliveredFile ||
+    !fs.existsSync(deliveredFile) ||
+    fs.readFileSync(deliveredFile, "utf8") !== "production-smoke\n"
+  ) {
+    throw new LiveSmokeError("DELIVERY_CONTENT_MISMATCH", "Delivered smoke file is not exact");
+  }
   process.stdout.write(`${JSON.stringify({ ok: true, taskId: task.id, state: task.state })}\n`);
 } finally {
-  if (task && task.state !== "COMMITTED" && task.state !== "CANCELLED") {
+  if (
+    task &&
+    task.state !== "COMMITTED" &&
+    task.state !== "CANCELLED" &&
+    task.state !== "EXHAUSTED"
+  ) {
     try {
       const current = runtime.control.get(task.id);
       await runtime.control.decide({

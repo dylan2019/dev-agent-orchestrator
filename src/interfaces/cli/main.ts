@@ -16,7 +16,7 @@ import { DEFAULT_BUDGETS } from "../../domain/budgets.js";
 import { LocalProcessRunner } from "../../infrastructure/process/local-process-runner.js";
 import { createControlRuntime } from "../../runtime/control-runtime.js";
 import { runtimePaths } from "../../runtime/paths.js";
-import { OrchestratorError } from "../../shared/errors.js";
+import { OrchestratorError, wrapError } from "../../shared/errors.js";
 import {
   discoverCodex,
   discoverGit,
@@ -195,8 +195,63 @@ function acceptanceGate(repository: string, gitCommand: string) {
   };
 }
 
+function npmLockfileDirectories(repository: string): readonly string[] {
+  const ignored = new Set([
+    ".git",
+    "node_modules",
+    "dist",
+    "build",
+    "target",
+    "coverage",
+    ".runtime",
+  ]);
+  const directories: string[] = [];
+  let visited = 0;
+  const visit = (directory: string, depth: number): void => {
+    visited += 1;
+    if (visited > 10_000) {
+      throw new OrchestratorError(
+        "NPM_WORKSPACE_SCAN_LIMIT",
+        "Repository directory scan exceeded its bounded setup limit",
+      );
+    }
+    if (
+      fs.existsSync(path.join(directory, "package.json")) &&
+      fs.existsSync(path.join(directory, "package-lock.json"))
+    ) {
+      directories.push(path.relative(repository, directory).split(path.sep).join("/"));
+      if (directories.length > 32) {
+        throw new OrchestratorError(
+          "NPM_WORKSPACE_LIMIT",
+          "Repository has too many lockfile-based Node projects for automatic setup",
+        );
+      }
+    }
+    if (depth >= 4) {
+      return;
+    }
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      if (entry.isDirectory() && !ignored.has(entry.name)) {
+        visit(path.join(directory, entry.name), depth + 1);
+      }
+    }
+  };
+  try {
+    visit(repository, 0);
+  } catch (error) {
+    throw wrapError(
+      "NPM_WORKSPACE_DISCOVERY_FAILED",
+      "Unable to discover lockfile-based Node projects",
+      error,
+      { repository },
+    );
+  }
+  return directories.sort();
+}
+
 function setupGates(repository: string): readonly Record<string, unknown>[] {
-  if (!fs.existsSync(path.join(repository, "package-lock.json"))) {
+  const directories = npmLockfileDirectories(repository);
+  if (directories.length === 0) {
     return [];
   }
   const npmCliCandidates = [
@@ -212,15 +267,14 @@ function setupGates(repository: string): readonly Record<string, unknown>[] {
       "package-lock.json exists but npm-cli.js could not be located",
     );
   }
-  return [
-    {
-      id: "node-dependencies",
-      command: process.execPath,
-      args: [npmCli, "ci", "--no-audit", "--no-fund"],
-      dependsOn: [],
-      timeoutMinutes: 30,
-    },
-  ];
+  return directories.map((directory, index) => ({
+    id: directories.length === 1 ? "node-dependencies" : `node-dependencies-${String(index + 1)}`,
+    command: process.execPath,
+    args: [npmCli, "ci", "--ignore-scripts", "--no-audit", "--no-fund"],
+    ...(directory ? { cwd: directory } : {}),
+    dependsOn: [],
+    timeoutMinutes: 30,
+  }));
 }
 
 async function initialize(args: ParsedArgs): Promise<void> {

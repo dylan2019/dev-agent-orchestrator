@@ -19,7 +19,7 @@ Codex -> implementation Worker -> affected Gate DAG -> Codex review
 - ScopeGrant revisions are append-only and fingerprint-bound.
 - CandidateSnapshots make every Gate, review, and delivery decision optimistic and stale-safe.
 - Codex reviews the Candidate before independent review cost is paid.
-- Runtime budgets stop oversized or semantically stalled work.
+- Runtime budgets stop semantically stalled work and unbounded process output.
 - Production logs contain key state transitions only—never prompts, reasoning, assistant deltas, source bodies, or raw streams.
 
 ## Requirements
@@ -102,13 +102,13 @@ CREATED
   -> COMMITTED
 ```
 
-Typed controlled states include `SCOPE_APPROVAL_REQUIRED`, `REWORK_REQUIRED`, `EXTERNAL_BLOCKED`, and `CANCELLED`. There is no ambiguous generic `failed` state.
+Typed controlled states include `SCOPE_APPROVAL_REQUIRED`, `REWORK_REQUIRED`, `EXTERNAL_BLOCKED`, `CANCELLED`, and terminal `EXHAUSTED`. There is no ambiguous generic `failed` state.
 
 ## Configuration
 
 The generated configuration is stored under `DEV_AGENT_ORCHESTRATOR_HOME` or `~/.dev-agent-orchestrator`. It contains absolute local paths and must not be committed. See [`config/config.example.json`](config/config.example.json) and [`config/orchestrator.schema.json`](config/orchestrator.schema.json).
 
-Risk-specific routing and Candidate budgets are mandatory. A critical Task has a smaller default Candidate budget than a normal Task, forcing high-risk changes into reviewable slices.
+Risk-specific routing and execution budgets are mandatory. Candidate size is reported for review, but file and line counts are not delivery blockers; scope authorization, resource limits, review, and final acceptance remain enforced.
 
 ## Logging and privacy
 

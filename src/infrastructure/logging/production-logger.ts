@@ -86,6 +86,7 @@ export class ProductionLogger implements EventLogger {
       ...(input.durationMs !== undefined ? { durationMs: input.durationMs } : {}),
       ...(input.outcome ? { outcome: input.outcome } : {}),
       ...(input.errorCode ? { errorCode: input.errorCode } : {}),
+      ...(input.exitCode !== undefined ? { exitCode: input.exitCode } : {}),
       ...(input.message ? { message: redactMessage(input.message) } : {}),
       ...(input.toolEvents !== undefined ? { toolEvents: input.toolEvents } : {}),
       ...(input.capturedBytes !== undefined ? { capturedBytes: input.capturedBytes } : {}),

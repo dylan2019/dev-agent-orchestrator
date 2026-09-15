@@ -95,8 +95,9 @@ Controlled branches:
 IMPLEMENTING -> SCOPE_APPROVAL_REQUIRED -> IMPLEMENTING
 VERIFYING -> REWORK_REQUIRED -> IMPLEMENTING
 INDEPENDENT_REVIEWING -> REWORK_REQUIRED -> IMPLEMENTING
-any non-terminal state -> EXTERNAL_BLOCKED -> previous state
+active state -> EXTERNAL_BLOCKED -> controlled rework
 any non-terminal state -> CANCELLED
+attempt budget exhausted -> EXHAUSTED (writer lease released, Candidate retained)
 ```
 
 There is no generic `failed` state. Every blocked or unsuccessful transition has a typed reason and a deterministic set of legal next actions.
@@ -137,8 +138,8 @@ Each Task owns cumulative budgets and each Attempt owns execution budgets:
 - tool events
 - captured bytes
 - time since Candidate fingerprint changed
-- changed files
-- changed lines
+
+Candidate file and line counts are review evidence, not fixed execution budgets.
 
 Continuous runtime activity without Candidate progress transitions to `EXTERNAL_BLOCKED` with reason `semantic_stall`. It is not classified as healthy progress.
 

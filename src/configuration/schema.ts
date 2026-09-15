@@ -44,8 +44,6 @@ const BudgetSchema = z
     maxToolEvents: z.number().int().min(1).max(100_000),
     maxCapturedBytes: z.number().int().min(1_000).max(100_000_000),
     maxNoCandidateChangeMinutes: z.number().int().min(1).max(120),
-    maxChangedFiles: z.number().int().min(1).max(10_000),
-    maxChangedLines: z.number().int().min(1).max(1_000_000),
   })
   .strict();
 const RouteSchema = z

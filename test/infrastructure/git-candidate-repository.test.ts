@@ -108,3 +108,68 @@ void test("Git Candidate repository preserves fingerprints, patches, approved tr
     fs.rmSync(temporary, { recursive: true, force: true });
   }
 });
+
+if (process.platform === "win32") {
+  void test("Git Candidate checkout handles a deep repository path without system Git changes", async () => {
+    const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "orchestrator-longpath-"));
+    const repository = path.join(temporary, "repository");
+    const worktreeRoot = path.join(temporary, `worktree-root-${"w".repeat(48)}`);
+    const relativeFile = path.join(
+      "src",
+      `segment-${"a".repeat(48)}`,
+      `segment-${"b".repeat(48)}`,
+      `segment-${"c".repeat(48)}`,
+      "LongCandidate.java",
+    );
+    const git = gitCommand();
+    const candidates = new GitCandidateRepository(git, new LocalProcessRunner());
+    const project: ProjectProfile = {
+      repository,
+      targetBranch: "main",
+      worktreeRoot,
+      instructionFiles: [],
+      gates: {
+        affected: [
+          {
+            id: "diff-check",
+            command: git,
+            args: ["diff", "--check", "HEAD"],
+            dependsOn: [],
+            timeoutMinutes: 1,
+          },
+        ],
+        acceptance: {
+          id: "acceptance",
+          command: git,
+          args: ["diff", "--check", "HEAD"],
+          dependsOn: ["diff-check"],
+          timeoutMinutes: 1,
+        },
+      },
+    };
+    let worktreePath: string | undefined;
+    try {
+      fs.mkdirSync(path.dirname(path.join(repository, relativeFile)), { recursive: true });
+      await runGit(git, repository, ["init", "-b", "main"]);
+      await runGit(git, repository, ["config", "user.name", "Longpath Test"]);
+      await runGit(git, repository, ["config", "user.email", "longpath@example.invalid"]);
+      fs.writeFileSync(path.join(repository, relativeFile), "base\n", "utf8");
+      await runGit(git, repository, ["-c", "core.longpaths=true", "add", "-A"]);
+      await runGit(git, repository, ["-c", "core.longpaths=true", "commit", "-m", "base"]);
+      await runGit(git, repository, ["config", "core.longpaths", "false"]);
+      const head = (await candidates.inspectProject(project)).head;
+      worktreePath = await candidates.createWorktree(project, "task-longpath-0001", head);
+      assert.equal(
+        fs.readFileSync(path.join(worktreePath, relativeFile), "utf8").replaceAll("\r\n", "\n"),
+        "base\n",
+      );
+      await candidates.removeWorktree(project, worktreePath, false);
+      worktreePath = undefined;
+    } finally {
+      if (worktreePath && fs.existsSync(worktreePath)) {
+        await candidates.removeWorktree(project, worktreePath, true);
+      }
+      fs.rmSync(temporary, { recursive: true, force: true });
+    }
+  });
+}

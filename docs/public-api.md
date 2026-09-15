@@ -12,6 +12,8 @@ Creates one Task aggregate and returns immediately. Inputs are objective, risk, 
 
 Returns a compact Task view or waits for a revision change. It includes current state, elapsed time, cumulative budgets, last Candidate progress, current operation, blocking reason, and legal next decisions.
 
+Terminal `EXHAUSTED` reports an attempt-budget reason, releases the Project writer lease, and leaves any Candidate available for inspection.
+
 ## `orchestrator_get_candidate`
 
 Returns a manifest by default. A bounded full patch or one file patch requires an explicit mode. Every response includes the CandidateSnapshot fingerprint used for optimistic decisions.

@@ -69,9 +69,7 @@
       "maxReviewerRuns": 2,
       "maxToolEvents": 400,
       "maxCapturedBytes": 2000000,
-      "maxNoCandidateChangeMinutes": 10,
-      "maxChangedFiles": 30,
-      "maxChangedLines": 2000
+      "maxNoCandidateChangeMinutes": 10
     },
     "high": {
       "maxWallClockMinutes": 90,
@@ -80,9 +78,7 @@
       "maxReviewerRuns": 2,
       "maxToolEvents": 600,
       "maxCapturedBytes": 2000000,
-      "maxNoCandidateChangeMinutes": 10,
-      "maxChangedFiles": 20,
-      "maxChangedLines": 1500
+      "maxNoCandidateChangeMinutes": 10
     },
     "critical": {
       "maxWallClockMinutes": 120,
@@ -91,9 +87,7 @@
       "maxReviewerRuns": 3,
       "maxToolEvents": 800,
       "maxCapturedBytes": 2000000,
-      "maxNoCandidateChangeMinutes": 10,
-      "maxChangedFiles": 15,
-      "maxChangedLines": 1000
+      "maxNoCandidateChangeMinutes": 10
     }
   },
   "logging": {

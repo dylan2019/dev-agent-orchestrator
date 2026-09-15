@@ -42,6 +42,7 @@ class MemoryGateCache implements GateCache {
 class FakeProcessRunner implements ProcessRunner {
   public calls = 0;
   public failAt = -1;
+  public failureStderr = "";
   public readonly invocations: {
     readonly command: string;
     readonly args: readonly string[];
@@ -59,9 +60,9 @@ class FakeProcessRunner implements ProcessRunner {
     return await Promise.resolve({
       exitCode: failed ? 1 : 0,
       stdout: "",
-      stderr: "",
+      stderr: failed ? this.failureStderr : "",
       stdoutBytes: 0,
-      stderrBytes: 0,
+      stderrBytes: failed ? Buffer.byteLength(this.failureStderr) : 0,
       stdoutTruncated: false,
       stderrTruncated: false,
       timedOut: false,
@@ -223,6 +224,33 @@ void test("Gate DAG stops after the first deterministic failure", async () => {
       ["pass", "fail"],
     );
     assert.equal(processes.calls, 2);
+  } finally {
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
+void test("acceptance failure keeps only its exit code and safe classification", async () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "orchestrator-acceptance-failure-"));
+  try {
+    const processes = new FakeProcessRunner();
+    processes.failAt = 1;
+    processes.failureStderr =
+      "'eslint' is not recognized as an internal or external command. PRIVATE_TOKEN=do-not-log";
+    const logFile = path.join(temporary, "events.jsonl");
+    const executor = new GateExecutor(
+      processes,
+      new FakeCandidateRepository(),
+      new MemoryGateCache(),
+      new ProductionLogger(logFile, 64_000),
+    );
+    const result = await executor.runAcceptance("task-1", project(temporary), temporary);
+    assert.equal(result.status, "fail");
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.errorCode, "GATE_REQUIRED_TOOL_MISSING");
+    assert.doesNotMatch(JSON.stringify(result), /PRIVATE_TOKEN|do-not-log|eslint/);
+    const log = fs.readFileSync(logFile, "utf8");
+    assert.match(log, /"exitCode":1/);
+    assert.doesNotMatch(log, /PRIVATE_TOKEN|do-not-log|eslint/);
   } finally {
     fs.rmSync(temporary, { recursive: true, force: true });
   }

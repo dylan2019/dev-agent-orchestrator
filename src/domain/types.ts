@@ -12,6 +12,7 @@ export const TASK_STATES = [
   "EXTERNAL_BLOCKED",
   "COMMITTED",
   "CANCELLED",
+  "EXHAUSTED",
 ] as const;
 
 export type TaskState = (typeof TASK_STATES)[number];
@@ -27,8 +28,6 @@ export interface ExecutionBudget {
   readonly maxToolEvents: number;
   readonly maxCapturedBytes: number;
   readonly maxNoCandidateChangeMinutes: number;
-  readonly maxChangedFiles: number;
-  readonly maxChangedLines: number;
 }
 
 export interface ScopeGrant {
@@ -76,6 +75,7 @@ export interface GateResult {
   readonly status: "pass" | "fail";
   readonly durationMs: number;
   readonly errorCode?: string;
+  readonly exitCode?: number;
   readonly cachedFromRunId?: string;
 }
 
@@ -119,7 +119,10 @@ export interface ExternalBlock {
     | "environment_unavailable";
   readonly message: string;
   readonly blockedAt: string;
-  readonly resumeState: Exclude<TaskState, "EXTERNAL_BLOCKED" | "COMMITTED" | "CANCELLED">;
+  readonly resumeState: Exclude<
+    TaskState,
+    "EXTERNAL_BLOCKED" | "COMMITTED" | "CANCELLED" | "EXHAUSTED"
+  >;
 }
 
 export interface TaskAggregate {

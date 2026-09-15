@@ -140,11 +140,19 @@ export function startImplementation(
   const implementationRuns = task.attempts.filter(
     (attempt) => attempt.kind === "implementation",
   ).length;
-  assertDomain(
-    implementationRuns < task.budget.maxAttempts && implementationRuns < task.budget.maxWorkerRuns,
-    "IMPLEMENTATION_BUDGET_EXHAUSTED",
-    "Implementation attempt budget is exhausted",
-  );
+  if (
+    implementationRuns >= task.budget.maxAttempts ||
+    implementationRuns >= task.budget.maxWorkerRuns
+  ) {
+    return transitioned(
+      task,
+      "EXHAUSTED",
+      input.occurredAt,
+      "budget.exhausted",
+      { reworkReason: "Implementation attempt budget exhausted" },
+      { kind: "implementation" },
+    );
+  }
   const scopeRevision = task.scopeGrants.at(-1)?.revision;
   assertDomain(scopeRevision !== undefined, "SCOPE_MISSING", "Task has no ScopeGrant");
   const attempt: Attempt = {
@@ -293,18 +301,6 @@ export function recordCandidate(
       violations,
     },
   );
-  assertDomain(
-    input.changedFiles.length <= task.budget.maxChangedFiles &&
-      input.changedLines <= task.budget.maxChangedLines,
-    "CANDIDATE_BUDGET_EXCEEDED",
-    "Candidate exceeds the configured size budget",
-    {
-      changedFiles: input.changedFiles.length,
-      changedLines: input.changedLines,
-      maxChangedFiles: task.budget.maxChangedFiles,
-      maxChangedLines: task.budget.maxChangedLines,
-    },
-  );
   const attempt = task.attempts.at(-1);
   assertDomain(
     attempt?.kind === "implementation",
@@ -438,11 +434,16 @@ export function startIndependentReviewAttempt(
   const reviewRuns = task.attempts.filter(
     (attempt) => attempt.kind === "independent_review",
   ).length;
-  assertDomain(
-    reviewRuns < task.budget.maxReviewerRuns,
-    "REVIEW_BUDGET_EXHAUSTED",
-    "Independent review budget is exhausted",
-  );
+  if (reviewRuns >= task.budget.maxReviewerRuns) {
+    return transitioned(
+      task,
+      "EXHAUSTED",
+      input.occurredAt,
+      "budget.exhausted",
+      { reworkReason: "Independent review budget exhausted" },
+      { kind: "independent_review" },
+    );
+  }
   const scopeRevision = task.scopeGrants.at(-1)?.revision;
   assertDomain(scopeRevision !== undefined, "SCOPE_MISSING", "Task has no ScopeGrant");
   const attempt: Attempt = {
@@ -491,6 +492,16 @@ export function requireRework(
       attempts: finishCurrentAttempt(task.attempts, input.occurredAt, "failed", input.errorCode),
       reworkReason: reason,
       externalBlock: undefined,
+      ...(task.state === "ACCEPTING" && task.delivery?.status === "running"
+        ? {
+            delivery: {
+              ...task.delivery,
+              status: "failed" as const,
+              finishedAt: input.occurredAt,
+              errorCode: input.errorCode,
+            },
+          }
+        : {}),
     },
     { errorCode: input.errorCode },
   );
@@ -641,7 +652,7 @@ export function cancelTask(
   reason: string,
 ): TransitionResult {
   assertDomain(
-    task.state !== "COMMITTED" && task.state !== "CANCELLED",
+    task.state !== "COMMITTED" && task.state !== "CANCELLED" && task.state !== "EXHAUSTED",
     "TASK_NOT_CANCELLABLE",
     "Terminal Task cannot be cancelled",
   );

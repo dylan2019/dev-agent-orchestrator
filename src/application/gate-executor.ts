@@ -35,6 +35,14 @@ function definitionHash(gate: GateDefinition): string {
     .digest("hex");
 }
 
+function gateFailureCode(stderr: string): string {
+  return /'[A-Za-z0-9._-]{1,64}' is not recognized as an internal or external command/i.test(
+    stderr,
+  ) || /(?:^|\n)(?:sh|bash):\s*(?:\d+:\s*)?[A-Za-z0-9._-]{1,64}:\s*command not found/i.test(stderr)
+    ? "GATE_REQUIRED_TOOL_MISSING"
+    : "GATE_EXIT_NONZERO";
+}
+
 function selectedGateOrder(
   gates: readonly GateDefinition[],
   changedFiles: readonly string[],
@@ -213,7 +221,8 @@ export class GateExecutor {
               ? "GATE_TIMEOUT"
               : result.cancelled
                 ? "GATE_CANCELLED"
-                : "GATE_EXIT_NONZERO",
+                : gateFailureCode(result.stderr),
+            exitCode: result.exitCode,
           }
         : {}),
     };
@@ -228,6 +237,7 @@ export class GateExecutor {
       durationMs: result.durationMs,
       outcome: passed ? "pass" : "fail",
       ...(!passed ? { errorCode: gateResult.errorCode } : {}),
+      ...(!passed ? { exitCode: result.exitCode } : {}),
     });
     return gateResult;
   }

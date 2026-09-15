@@ -130,6 +130,7 @@ function legalDecisions(task: TaskAggregate): readonly TaskDecision["action"][] 
       return ["approve_delivery", "request_rework", "cancel"];
     case "COMMITTED":
     case "CANCELLED":
+    case "EXHAUSTED":
       return [];
     default:
       return ["cancel"];
@@ -147,7 +148,9 @@ export class ControlService {
     private readonly logger: EventLogger,
   ) {}
 
-  public async reconcile(): Promise<{ readonly blockedTasks: readonly string[] }> {
+  public async reconcile(
+    observedAtMs = Date.now(),
+  ): Promise<{ readonly blockedTasks: readonly string[] }> {
     const activeStates = new Set([
       "CREATED",
       "SCOPING",
@@ -163,6 +166,13 @@ export class ControlService {
       }
       const runner = this.runtime.get(task.id, "runner");
       if (runner && this.supervisor.status(runner) === "owned") {
+        continue;
+      }
+      if (
+        !runner &&
+        task.state === "CREATED" &&
+        observedAtMs - Date.parse(task.createdAt) < 30_000
+      ) {
         continue;
       }
       if (runner) {

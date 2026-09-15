@@ -424,16 +424,6 @@
               "type": "integer",
               "minimum": 1,
               "maximum": 120
-            },
-            "maxChangedFiles": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 10000
-            },
-            "maxChangedLines": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 1000000
             }
           },
           "required": [
@@ -443,9 +433,7 @@
             "maxReviewerRuns",
             "maxToolEvents",
             "maxCapturedBytes",
-            "maxNoCandidateChangeMinutes",
-            "maxChangedFiles",
-            "maxChangedLines"
+            "maxNoCandidateChangeMinutes"
           ],
           "additionalProperties": false
         },
@@ -486,16 +474,6 @@
               "type": "integer",
               "minimum": 1,
               "maximum": 120
-            },
-            "maxChangedFiles": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 10000
-            },
-            "maxChangedLines": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 1000000
             }
           },
           "required": [
@@ -505,9 +483,7 @@
             "maxReviewerRuns",
             "maxToolEvents",
             "maxCapturedBytes",
-            "maxNoCandidateChangeMinutes",
-            "maxChangedFiles",
-            "maxChangedLines"
+            "maxNoCandidateChangeMinutes"
           ],
           "additionalProperties": false
         },
@@ -548,16 +524,6 @@
               "type": "integer",
               "minimum": 1,
               "maximum": 120
-            },
-            "maxChangedFiles": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 10000
-            },
-            "maxChangedLines": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 1000000
             }
           },
           "required": [
@@ -567,9 +533,7 @@
             "maxReviewerRuns",
             "maxToolEvents",
             "maxCapturedBytes",
-            "maxNoCandidateChangeMinutes",
-            "maxChangedFiles",
-            "maxChangedLines"
+            "maxNoCandidateChangeMinutes"
           ],
           "additionalProperties": false
         }

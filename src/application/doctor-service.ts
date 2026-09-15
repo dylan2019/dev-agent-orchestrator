@@ -4,6 +4,7 @@ import path from "node:path";
 import type { WorkerAdapterRegistry } from "../adapters/registry.js";
 import type { ConfigFileRepository } from "../configuration/file-repository.js";
 import type { CandidateRepository } from "./ports/candidate-repository.js";
+import type { TaskStore } from "./ports/task-store.js";
 
 export interface DoctorIssue {
   readonly severity: "error" | "warning";
@@ -40,6 +41,7 @@ export class DoctorService {
     private readonly configRepository: ConfigFileRepository,
     private readonly candidates: CandidateRepository,
     private readonly adapters: WorkerAdapterRegistry,
+    private readonly store: TaskStore,
   ) {}
 
   public async run(projectId?: string): Promise<DoctorResult> {
@@ -57,6 +59,38 @@ export class DoctorService {
       });
     }
     for (const [id, project] of projects) {
+      const owner = this.store.writerLeaseOwner(id);
+      if (owner) {
+        try {
+          const task = this.store.get(owner);
+          if (
+            task.state === "COMMITTED" ||
+            task.state === "CANCELLED" ||
+            task.state === "EXHAUSTED"
+          ) {
+            issues.push({
+              severity: "error",
+              code: "WRITER_LEASE_ORPHANED",
+              message: `Terminal Task still owns the Project writer lease: ${owner}`,
+              subject: id,
+            });
+          } else if (!fs.existsSync(path.resolve(project.worktreeRoot, owner))) {
+            issues.push({
+              severity: "error",
+              code: "CANDIDATE_WORKTREE_MISSING",
+              message: `Leased Task has no Candidate Worktree: ${owner}`,
+              subject: id,
+            });
+          }
+        } catch {
+          issues.push({
+            severity: "error",
+            code: "WRITER_LEASE_ORPHANED",
+            message: `Writer lease refers to a Task that cannot be read: ${owner}`,
+            subject: id,
+          });
+        }
+      }
       if (
         normalized(project.gates.acceptance.command) === normalized(config.runtime.gitCommand) &&
         project.gates.acceptance.args.join(" ").includes("diff --check")

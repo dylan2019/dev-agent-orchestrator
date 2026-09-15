@@ -8,8 +8,6 @@ const NORMAL: ExecutionBudget = {
   maxToolEvents: 400,
   maxCapturedBytes: 2_000_000,
   maxNoCandidateChangeMinutes: 10,
-  maxChangedFiles: 30,
-  maxChangedLines: 2_000,
 };
 
 export const DEFAULT_BUDGETS: Readonly<Record<RiskLevel, ExecutionBudget>> = {
@@ -18,15 +16,11 @@ export const DEFAULT_BUDGETS: Readonly<Record<RiskLevel, ExecutionBudget>> = {
     ...NORMAL,
     maxWallClockMinutes: 90,
     maxToolEvents: 600,
-    maxChangedFiles: 20,
-    maxChangedLines: 1_500,
   },
   critical: {
     ...NORMAL,
     maxWallClockMinutes: 120,
     maxReviewerRuns: 3,
     maxToolEvents: 800,
-    maxChangedFiles: 15,
-    maxChangedLines: 1_000,
   },
 };
