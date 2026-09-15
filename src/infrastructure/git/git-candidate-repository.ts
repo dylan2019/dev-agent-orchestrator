@@ -86,6 +86,38 @@ function assertContainedRealPath(canonicalRoot: string, absolute: string, file: 
   }
 }
 
+async function streamFileContent(targets: readonly crypto.Hash[], file: string): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const stream = fs.createReadStream(file);
+    stream.on("data", (chunk: string | Buffer) => {
+      for (const target of targets) {
+        target.update(chunk);
+      }
+    });
+    stream.once("error", reject);
+    stream.once("end", resolve);
+  });
+}
+
+async function contentUnchanged(
+  file: string,
+  mode: number,
+  expectedDigest: string,
+): Promise<boolean> {
+  const current = lstatOrMissing(file);
+  if (!current?.isFile() || current.size > MAX_FILE_BYTES) {
+    return false;
+  }
+  const actual = crypto.createHash("sha256");
+  actual.update(`mode:${String(mode)}\0`);
+  try {
+    await streamFileContent([actual], file);
+  } catch {
+    return false;
+  }
+  return actual.digest("hex") === expectedDigest;
+}
+
 async function hashFile(hash: crypto.Hash, file: string): Promise<number> {
   const before = fs.lstatSync(file);
   hash.update(`mode:${String(before.mode)}\0`);
@@ -112,20 +144,14 @@ async function hashFile(hash: crypto.Hash, file: string): Promise<number> {
       },
     );
   }
-  await new Promise<void>((resolve, reject) => {
-    const stream = fs.createReadStream(file);
-    stream.on("data", (chunk: string | Buffer) => {
-      hash.update(chunk);
-    });
-    stream.once("error", reject);
-    stream.once("end", resolve);
-  });
+  const verification = crypto.createHash("sha256");
+  verification.update(`mode:${String(before.mode)}\0`);
+  await streamFileContent([hash, verification], file);
+  const expectedDigest = verification.digest("hex");
   const after = fs.lstatSync(file);
-  if (
-    before.size !== after.size ||
-    before.mtimeMs !== after.mtimeMs ||
-    before.mode !== after.mode
-  ) {
+  const metadataChanged =
+    before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.mode !== after.mode;
+  if (metadataChanged && !(await contentUnchanged(file, after.mode, expectedDigest))) {
     throw new OrchestratorError(
       "CANDIDATE_CHANGED_DURING_INSPECTION",
       "Candidate changed while its fingerprint was calculated",

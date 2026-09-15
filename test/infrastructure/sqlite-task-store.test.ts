@@ -13,11 +13,14 @@ import { OrchestratorError } from "../../src/shared/errors.js";
 
 const AT = "2026-09-14T06:00:00.000Z";
 
-function created() {
+function created(
+  id = "task-20260914-persist1",
+  objective = "Persist a production Task transition",
+) {
   return createTask({
-    id: "task-20260914-persist1",
+    id,
     projectId: "example",
-    objective: "Persist a production Task transition",
+    objective,
     risk: "normal",
     executionProfileFingerprint: "f".repeat(64),
     implementationWorkerId: "implementation",
@@ -103,6 +106,31 @@ void test("SQLite writer lease is unique and ownership-checked across store inst
   } finally {
     second.close();
     first.close();
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
+void test("SQLite store transfers a writer lease only from the expected previous Task", () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "orchestrator-lease-reclaim-"));
+  const databaseFile = path.join(temporary, "state.db");
+  const store = new SqliteTaskStore(databaseFile);
+  try {
+    const blockedId = "task-20260914-blocked1";
+    const claimantId = "task-20260914-claim1";
+    store.createWithWriterLease(created(blockedId, "Hold a lease while externally blocked"), AT);
+    const claimant = created(claimantId, "Claim a lease abandoned by a blocked Task");
+    assert.throws(
+      () => store.createWithReclaimedWriterLease(claimant, AT, "task-20260914-missing"),
+      (error: unknown) => error instanceof OrchestratorError && error.code === "WRITER_LEASE_BUSY",
+    );
+    assert.equal(store.writerLeaseOwner("example"), blockedId);
+    assert.throws(() => store.get(claimantId));
+    store.createWithReclaimedWriterLease(claimant, AT, blockedId);
+    assert.equal(store.writerLeaseOwner("example"), claimantId);
+    assert.equal(store.get(claimantId).state, "CREATED");
+    assert.equal(store.get(blockedId).state, "CREATED");
+  } finally {
+    store.close();
     fs.rmSync(temporary, { recursive: true, force: true });
   }
 });

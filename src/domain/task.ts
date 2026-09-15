@@ -71,6 +71,16 @@ function requireFingerprint(value: string, field: string): string {
   return normalized;
 }
 
+const TERMINAL_TASK_STATES: readonly TaskState[] = ["COMMITTED", "CANCELLED", "EXHAUSTED"];
+
+export function isTerminalTaskState(state: TaskState): boolean {
+  return TERMINAL_TASK_STATES.includes(state);
+}
+
+export function taskAllowsLeaseReclaim(task: TaskAggregate): boolean {
+  return task.state === "EXTERNAL_BLOCKED";
+}
+
 export function createTask(input: {
   readonly id: string;
   readonly projectId: string;

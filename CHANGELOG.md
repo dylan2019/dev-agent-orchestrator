@@ -4,6 +4,13 @@
 
 ### Fixed
 
+- Reclaim the Project writer lease from an externally blocked Task when a new Task starts, so one crashed Runner can no longer lock a Project forever; resuming a blocked Task now re-acquires the lease or fails with a typed conflict.
+- Remove an abandoned Candidate Worktree when a Task is cancelled, and report a failed removal instead of leaving the directory behind silently.
+- Report Task Runner launch and abnormal termination with a bounded, redacted stderr tail instead of losing every pre-boot crash behind ignored stdio.
+- Skip a duplicate Runner launch while the current Runner process is still alive, so repeated decisions cannot stack Runner processes on one Task.
+- Derive the Runner registration grace from the persisted Task timestamp, so a restarted MCP server no longer mistakes a booting Task for a lost process.
+- Verify Candidate file content by re-hashing instead of trusting `mtime`, so a file touched by indexing or antivirus software no longer fails inspection.
+
 - Reconcile active Tasks periodically while MCP is connected, without overlapping scans or misclassifying a Worktree still being created; recover a lost Runner without a service restart.
 - Resume blocked independent review or delivery only when the approved Candidate and, for delivery, the clean original target base are verified; uncertain Git integration exceptions remain blocked instead of restarting implementation.
 - Reject filesystem-link escapes in Gate working directories and Candidate file inspection.

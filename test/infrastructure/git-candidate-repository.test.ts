@@ -195,3 +195,69 @@ if (process.platform === "win32") {
     }
   });
 }
+
+void test("Git Candidate inspection tolerates a touched file whose content is unchanged", async () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "orchestrator-git-touch-"));
+  const repositoryPath = path.join(temporary, "repository");
+  const worktreeRoot = path.join(temporary, "worktrees");
+  const git = gitCommand();
+  const candidates = new GitCandidateRepository(git, new LocalProcessRunner());
+  const project: ProjectProfile = {
+    repository: repositoryPath,
+    targetBranch: "main",
+    worktreeRoot,
+    instructionFiles: [],
+    gates: {
+      affected: [
+        {
+          id: "diff-check",
+          command: git,
+          args: ["diff", "--check", "HEAD"],
+          dependsOn: [],
+          timeoutMinutes: 1,
+        },
+      ],
+      acceptance: {
+        id: "acceptance",
+        command: git,
+        args: ["diff", "--check", "HEAD"],
+        dependsOn: ["diff-check"],
+        timeoutMinutes: 1,
+      },
+    },
+  };
+  let worktreePath: string | undefined;
+  try {
+    fs.mkdirSync(repositoryPath);
+    await runGit(git, repositoryPath, ["init", "-b", "main"]);
+    await runGit(git, repositoryPath, ["config", "user.name", "Touch Test"]);
+    await runGit(git, repositoryPath, ["config", "user.email", "touch@example.invalid"]);
+    fs.writeFileSync(path.join(repositoryPath, "README.md"), "base\n", "utf8");
+    await runGit(git, repositoryPath, ["add", "-A"]);
+    await runGit(git, repositoryPath, ["commit", "-m", "base"]);
+    const head = (await candidates.inspectProject(project)).head;
+    worktreePath = await candidates.createWorktree(project, "task-touch-0001", head);
+    const largeFile = path.join(worktreePath, "large.bin");
+    fs.writeFileSync(largeFile, Buffer.alloc(12_000_000, 7));
+    const expected = (await candidates.inspect(worktreePath)).fingerprint;
+    const toucher = setInterval(() => {
+      if (!fs.existsSync(largeFile)) {
+        return;
+      }
+      const stamp = Date.now() / 1000 + 1;
+      fs.utimesSync(largeFile, stamp, stamp);
+    }, 1);
+    let observed: string;
+    try {
+      observed = (await candidates.inspect(worktreePath)).fingerprint;
+    } finally {
+      clearInterval(toucher);
+    }
+    assert.equal(observed, expected);
+  } finally {
+    if (worktreePath && fs.existsSync(worktreePath)) {
+      await candidates.removeWorktree(project, worktreePath, true);
+    }
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
+});

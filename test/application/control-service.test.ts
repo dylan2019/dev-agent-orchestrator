@@ -28,10 +28,12 @@ import {
   recordCandidate,
   recordControlReview,
   recordIndependentReview,
+  requireRework,
   startImplementation,
   startIndependentReviewAttempt,
 } from "../../src/domain/task.js";
 import { ProductionLogger } from "../../src/infrastructure/logging/production-logger.js";
+import { processIdentity } from "../../src/infrastructure/process/process-identity.js";
 import { LocalProcessSupervisor } from "../../src/infrastructure/process/local-process-supervisor.js";
 import { SqliteRuntimeRegistry } from "../../src/infrastructure/sqlite/runtime-registry.js";
 import { SqliteTaskStore } from "../../src/infrastructure/sqlite/task-store.js";
@@ -384,6 +386,264 @@ void test("doctor reports a leased Task whose Candidate Worktree is missing", as
     assert.equal(report.ok, false);
     assert.ok(report.issues.some((issue) => issue.code === "CANDIDATE_WORKTREE_MISSING"));
   } finally {
+    store.close();
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
+void test("a blocked Task releases its Project writer lease to a new Task and cannot resume afterwards", async () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "orchestrator-lease-handover-"));
+  const configuration = config(temporary);
+  const project = configuration.projects.example;
+  assert.ok(project);
+  fs.mkdirSync(project.repository, { recursive: true });
+  const configRepository = new ConfigFileRepository(path.join(temporary, "config.json"));
+  configRepository.write(configuration);
+  const store = new SqliteTaskStore(path.join(temporary, "state.db"));
+  const runtime = new SqliteRuntimeRegistry(path.join(temporary, "state.db"));
+  const at = "2026-09-15T06:00:00.000Z";
+  const binding = resolveExecutionBinding(configRepository.read(), "example", "normal");
+  const blocked = blockExternally(
+    startImplementation(
+      createTask({
+        id: "task-blocked-lease-0001",
+        projectId: "example",
+        objective: "Hold a Project writer lease while externally blocked",
+        risk: "normal",
+        executionProfileFingerprint: binding.fingerprint,
+        implementationWorkerId: "implementation",
+        reviewWorkerId: "review",
+        budget: DEFAULT_BUDGETS.normal,
+        initialScope: ["src"],
+        occurredAt: at,
+      }).task,
+      { executorId: "implementation", model: "implementation-model", occurredAt: at },
+    ).task,
+    {
+      reason: "process_lost",
+      message: "Task Runner is no longer alive",
+      blockedAt: at,
+      resumeState: "IMPLEMENTING",
+    },
+  );
+  store.createWithWriterLease(blocked, at);
+  const control = new ControlService(
+    configRepository,
+    store,
+    new FakeCandidates(project),
+    new FakeLauncher(),
+    runtime,
+    new LocalProcessSupervisor(runtime),
+    new ProductionLogger(path.join(temporary, "events.jsonl"), 64_000),
+  );
+  try {
+    const started = await control.start({
+      objective: "Continue work on a Project whose lease holder is blocked",
+      risk: "normal",
+      initialScope: ["src"],
+    });
+    assert.equal(store.writerLeaseOwner("example"), started.id);
+    assert.equal(store.get(blocked.task.id).state, "EXTERNAL_BLOCKED");
+    await assert.rejects(
+      async () =>
+        await control.decide({
+          action: "request_rework",
+          taskId: blocked.task.id,
+          expectedRevision: blocked.task.revision,
+          reason: "Retry the blocked Task",
+        }),
+      (error: unknown) =>
+        error instanceof OrchestratorError && error.code === "WRITER_LEASE_UNAVAILABLE",
+    );
+    assert.equal(store.get(blocked.task.id).state, "EXTERNAL_BLOCKED");
+  } finally {
+    runtime.close();
+    store.close();
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
+void test("reconcile tolerates a recently updated Task whose Runner has not registered yet", async () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "orchestrator-launch-grace-"));
+  const configuration = config(temporary);
+  const project = configuration.projects.example;
+  assert.ok(project);
+  fs.mkdirSync(project.repository, { recursive: true });
+  const configRepository = new ConfigFileRepository(path.join(temporary, "config.json"));
+  configRepository.write(configuration);
+  const store = new SqliteTaskStore(path.join(temporary, "state.db"));
+  const runtime = new SqliteRuntimeRegistry(path.join(temporary, "state.db"));
+  const at = new Date().toISOString();
+  const binding = resolveExecutionBinding(configRepository.read(), "example", "normal");
+  const created = createTask({
+    id: "task-launch-grace-0001",
+    projectId: "example",
+    objective: "Wait for a Runner that has not registered yet",
+    risk: "normal",
+    executionProfileFingerprint: binding.fingerprint,
+    implementationWorkerId: "implementation",
+    reviewWorkerId: "review",
+    budget: DEFAULT_BUDGETS.normal,
+    initialScope: ["src"],
+    occurredAt: at,
+  });
+  store.createWithWriterLease(created, at);
+  const implementing = startImplementation(created.task, {
+    executorId: "implementation",
+    model: "implementation-model",
+    occurredAt: at,
+  });
+  store.save(created.task.revision, implementing);
+  const control = new ControlService(
+    configRepository,
+    store,
+    new FakeCandidates(project),
+    new FakeLauncher(),
+    runtime,
+    new LocalProcessSupervisor(runtime),
+    new ProductionLogger(path.join(temporary, "events.jsonl"), 64_000),
+  );
+  try {
+    const reconciliation = await control.reconcile();
+    assert.deepEqual(reconciliation.blockedTasks, []);
+    assert.equal(store.get(created.task.id).state, "IMPLEMENTING");
+    const stale = await control.reconcile(Date.now() + 60_000);
+    assert.deepEqual(stale.blockedTasks, [created.task.id]);
+    assert.equal(store.get(created.task.id).state, "EXTERNAL_BLOCKED");
+  } finally {
+    runtime.close();
+    store.close();
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
+void test("a live Runner prevents a duplicate Task Runner launch", async () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "orchestrator-runner-relaunch-"));
+  const configuration = config(temporary);
+  const project = configuration.projects.example;
+  assert.ok(project);
+  fs.mkdirSync(project.repository, { recursive: true });
+  const configRepository = new ConfigFileRepository(path.join(temporary, "config.json"));
+  configRepository.write(configuration);
+  const store = new SqliteTaskStore(path.join(temporary, "state.db"));
+  const runtime = new SqliteRuntimeRegistry(path.join(temporary, "state.db"));
+  const at = new Date().toISOString();
+  const binding = resolveExecutionBinding(configRepository.read(), "example", "normal");
+  const created = createTask({
+    id: "task-runner-relaunch-01",
+    projectId: "example",
+    objective: "Keep one Task Runner alive across repeated decisions",
+    risk: "normal",
+    executionProfileFingerprint: binding.fingerprint,
+    implementationWorkerId: "implementation",
+    reviewWorkerId: "review",
+    budget: DEFAULT_BUDGETS.normal,
+    initialScope: ["src"],
+    occurredAt: at,
+  });
+  store.createWithWriterLease(created, at);
+  let current = created.task;
+  const implementing = startImplementation(current, {
+    executorId: "implementation",
+    model: "implementation-model",
+    occurredAt: at,
+  });
+  store.save(current.revision, implementing);
+  current = implementing.task;
+  const reworked = requireRework(current, {
+    reason: "Worker output was incomplete",
+    errorCode: "WORKER_RESULT_ERROR",
+    occurredAt: at,
+  });
+  store.save(current.revision, reworked);
+  current = reworked.task;
+  const identity = processIdentity(process.pid);
+  assert.ok(identity);
+  runtime.register({
+    taskId: current.id,
+    role: "runner",
+    pid: process.pid,
+    identity,
+    startedAt: at,
+  });
+  const launcher = new FakeLauncher();
+  const control = new ControlService(
+    configRepository,
+    store,
+    new FakeCandidates(project),
+    launcher,
+    runtime,
+    new LocalProcessSupervisor(runtime),
+    new ProductionLogger(path.join(temporary, "events.jsonl"), 64_000),
+  );
+  try {
+    const repeated = await control.decide({
+      action: "request_rework",
+      taskId: current.id,
+      expectedRevision: current.revision,
+      reason: "Confirm the existing Runner keeps working",
+    });
+    assert.deepEqual(launcher.launched, []);
+    const released = await control.decide({
+      action: "request_rework",
+      taskId: current.id,
+      expectedRevision: repeated.revision,
+      reason: "Restart the Runner after it was lost",
+    });
+    assert.deepEqual(launcher.launched, []);
+    runtime.clear(current.id, "runner", process.pid, identity);
+    await control.decide({
+      action: "request_rework",
+      taskId: current.id,
+      expectedRevision: released.revision,
+      reason: "Relaunch after the Runner record was cleared",
+    });
+    assert.deepEqual(launcher.launched, [current.id]);
+  } finally {
+    runtime.close();
+    store.close();
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
+void test("cancelling a Task removes its abandoned Candidate Worktree", async () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "orchestrator-cancel-worktree-"));
+  const configuration = config(temporary);
+  const project = configuration.projects.example;
+  assert.ok(project);
+  fs.mkdirSync(project.repository, { recursive: true });
+  const configRepository = new ConfigFileRepository(path.join(temporary, "config.json"));
+  configRepository.write(configuration);
+  const store = new SqliteTaskStore(path.join(temporary, "state.db"));
+  const runtime = new SqliteRuntimeRegistry(path.join(temporary, "state.db"));
+  const control = new ControlService(
+    configRepository,
+    store,
+    new FakeCandidates(project),
+    new FakeLauncher(),
+    runtime,
+    new LocalProcessSupervisor(runtime),
+    new ProductionLogger(path.join(temporary, "events.jsonl"), 64_000),
+  );
+  try {
+    const task = await control.start({
+      objective: "Create a Candidate Worktree that must not survive cancellation",
+      risk: "normal",
+      initialScope: ["src"],
+    });
+    const worktreePath = path.join(project.worktreeRoot, task.id);
+    assert.equal(fs.existsSync(worktreePath), true);
+    const cancelled = await control.decide({
+      action: "cancel",
+      taskId: task.id,
+      expectedRevision: task.revision,
+      reason: "abandon before implementation",
+    });
+    assert.equal(cancelled.state, "CANCELLED");
+    assert.equal(fs.existsSync(worktreePath), false);
+    assert.equal(store.writerLeaseOwner("example"), undefined);
+  } finally {
+    runtime.close();
     store.close();
     fs.rmSync(temporary, { recursive: true, force: true });
   }

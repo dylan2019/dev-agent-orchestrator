@@ -60,6 +60,32 @@ export class SqliteTaskStore implements TaskStore {
     });
   }
 
+  public createWithReclaimedWriterLease(
+    result: TransitionResult,
+    acquiredAt: string,
+    expectedOwnerTaskId: string,
+  ): void {
+    this.transactionalPersist(
+      result,
+      () => {
+        const owner = this.writerLeaseOwner(result.task.projectId);
+        if (owner !== expectedOwnerTaskId) {
+          throw new OrchestratorError("WRITER_LEASE_BUSY", "Project writer lease changed owner", {
+            projectId: result.task.projectId,
+            expectedOwnerTaskId,
+            owner: owner ?? null,
+          });
+        }
+        this.database
+          .prepare("DELETE FROM writer_leases WHERE project_id = ?")
+          .run(result.task.projectId);
+        this.persistStatements(undefined, result);
+        this.acquireWriterLease(result.task.projectId, result.task.id, acquiredAt);
+      },
+      false,
+    );
+  }
+
   public save(expectedRevision: number, result: TransitionResult): void {
     this.persist(expectedRevision, result);
   }

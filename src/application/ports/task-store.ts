@@ -3,6 +3,11 @@ import type { TaskAggregate, TransitionResult } from "../../domain/types.js";
 export interface TaskStore {
   create(result: TransitionResult): void;
   createWithWriterLease(result: TransitionResult, acquiredAt: string): void;
+  createWithReclaimedWriterLease(
+    result: TransitionResult,
+    acquiredAt: string,
+    expectedOwnerTaskId: string,
+  ): void;
   save(expectedRevision: number, result: TransitionResult): void;
   saveAndReleaseWriterLease(expectedRevision: number, result: TransitionResult): void;
   get(taskId: string): TaskAggregate;

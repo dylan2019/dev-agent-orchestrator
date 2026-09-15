@@ -106,6 +106,7 @@ The running MCP server reconciles lost Runners periodically with a single-flight
 ## 5. Transition invariants
 
 - Only the Task owning the Project writer lease may enter IMPLEMENTING.
+- An externally blocked Task yields its writer lease to a newly starting Task instead of locking the Project indefinitely; resuming a blocked Task re-acquires the lease or fails with a typed conflict.
 - A ScopeGrant can only preserve or expand prior authorization; it cannot silently shrink or replace it.
 - Every current Candidate file must be covered by the ScopeGrant used for the next Attempt.
 - Candidate changes invalidate affected Gate runs, ControlReview, IndependentReview, and pending Delivery.

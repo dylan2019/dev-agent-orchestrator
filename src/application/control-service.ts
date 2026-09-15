@@ -14,6 +14,7 @@ import {
   recordControlReview,
   requireRework,
   resumeExternalBlock,
+  taskAllowsLeaseReclaim,
 } from "../domain/task.js";
 import type { RiskLevel, TaskAggregate, TransitionResult } from "../domain/types.js";
 import { OrchestratorError, wrapError } from "../shared/errors.js";
@@ -83,6 +84,8 @@ export interface TaskObservation {
   readonly legalDecisions: readonly TaskDecision["action"][];
   readonly writerLeaseOwner?: string;
 }
+
+const LAUNCH_GRACE_MS = 30_000;
 
 function timestamp(): string {
   return new Date().toISOString();
@@ -185,8 +188,12 @@ export class ControlService {
       if (
         !runner &&
         task.state === "CREATED" &&
-        observedAtMs - Date.parse(task.createdAt) < 30_000
+        observedAtMs - Date.parse(task.createdAt) < LAUNCH_GRACE_MS
       ) {
+        continue;
+      }
+      if (!runner && observedAtMs - Date.parse(task.updatedAt) < LAUNCH_GRACE_MS) {
+        // A freshly persisted Task may still be waiting for its Runner to register after a service restart.
         continue;
       }
       if (runner) {
@@ -271,7 +278,7 @@ export class ControlService {
       initialScope: input.initialScope,
       occurredAt,
     });
-    this.store.createWithWriterLease(created, occurredAt);
+    this.claimWriterLease(created, occurredAt);
     this.logger.write({
       level: "info",
       event: "task.created",
@@ -303,6 +310,84 @@ export class ControlService {
       }
       throw wrapError("TASK_START_FAILED", "Unable to start Task", error, {
         taskId: created.task.id,
+      });
+    }
+  }
+
+  private claimWriterLease(created: TransitionResult, acquiredAt: string): void {
+    let busy: OrchestratorError | undefined;
+    try {
+      this.store.createWithWriterLease(created, acquiredAt);
+      return;
+    } catch (error) {
+      if (!(error instanceof OrchestratorError) || error.code !== "WRITER_LEASE_BUSY") {
+        throw error;
+      }
+      busy = error;
+    }
+    const projectId = created.task.projectId;
+    const owner = this.store.writerLeaseOwner(projectId);
+    const holder = owner ? this.tryGet(owner) : undefined;
+    if (!owner || !holder || !taskAllowsLeaseReclaim(holder)) {
+      throw busy;
+    }
+    this.store.createWithReclaimedWriterLease(created, acquiredAt, owner);
+    this.logger.write({
+      level: "warn",
+      event: "lease.reclaimed",
+      taskId: created.task.id,
+      projectId,
+      operation: owner,
+      message: `Writer lease reclaimed from blocked Task ${owner}`,
+      outcome: "started",
+    });
+  }
+
+  private tryGet(taskId: string): TaskAggregate | undefined {
+    try {
+      return this.store.get(taskId);
+    } catch (error) {
+      if (error instanceof OrchestratorError && error.code === "TASK_NOT_FOUND") {
+        return undefined;
+      }
+      throw error;
+    }
+  }
+
+  private requireWriterLease(task: TaskAggregate): void {
+    const owner = this.store.writerLeaseOwner(task.projectId);
+    if (owner === task.id) {
+      return;
+    }
+    if (owner === undefined) {
+      this.store.acquireWriterLease(task.projectId, task.id, timestamp());
+      return;
+    }
+    throw new OrchestratorError(
+      "WRITER_LEASE_UNAVAILABLE",
+      "Another Task owns the Project writer lease and must finish, cancel, or be reclaimed first",
+      { projectId: task.projectId, taskId: task.id, owner },
+    );
+  }
+
+  private async discardAbandonedWorktree(task: TaskAggregate): Promise<void> {
+    const binding = assertExecutionBinding(this.configRepository.read(), task);
+    const worktreePath = path.resolve(binding.project.worktreeRoot, task.id);
+    if (!fs.existsSync(worktreePath)) {
+      return;
+    }
+    try {
+      await this.candidates.removeWorktree(binding.project, worktreePath, true);
+    } catch (error) {
+      this.logger.write({
+        level: "warn",
+        event: "error",
+        taskId: task.id,
+        projectId: task.projectId,
+        state: task.state,
+        errorCode: error instanceof OrchestratorError ? error.code : "WORKTREE_REMOVAL_FAILED",
+        message: "Candidate Worktree remains on disk after the Task became terminal",
+        outcome: "fail",
       });
     }
   }
@@ -465,6 +550,7 @@ export class ControlService {
           state: transition.task.state,
           outcome: "cancelled",
         });
+        await this.discardAbandonedWorktree(transition.task);
         return transition.task;
     }
     this.store.save(task.revision, transition);
@@ -476,8 +562,19 @@ export class ControlService {
       state: transition.task.state,
       operation: transition.event.type,
     });
-    await this.launcher.launch(task.id);
+    await this.launchRunner(transition.task);
     return transition.task;
+  }
+
+  private async launchRunner(task: TaskAggregate): Promise<void> {
+    const existing = this.runtime.get(task.id, "runner");
+    if (existing && this.supervisor.status(existing) === "owned") {
+      return;
+    }
+    if (existing) {
+      this.runtime.clear(task.id, "runner", existing.pid, existing.identity);
+    }
+    await this.launcher.launch(task.id);
   }
 
   private async terminateProcesses(taskIdValue: string): Promise<void> {
@@ -498,6 +595,7 @@ export class ControlService {
     if (!block) {
       throw new OrchestratorError("EXTERNAL_BLOCK_MISSING", "Task has no external block evidence");
     }
+    this.requireWriterLease(task);
     const occurredAt = timestamp();
     if (block.resumeState !== "INDEPENDENT_REVIEWING" && block.resumeState !== "ACCEPTING") {
       return resumeExternalBlock(task, { occurredAt, targetState: "REWORK_REQUIRED" });
