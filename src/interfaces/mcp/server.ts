@@ -50,9 +50,50 @@ function requiredString(value: string | undefined, field: string): string {
   return value;
 }
 
+export function startReconcileMonitor(
+  reconcile: () => Promise<unknown>,
+  reportFailure: (error: unknown) => void,
+  intervalMs = 30_000,
+): { readonly stop: () => Promise<void> } {
+  if (!Number.isInteger(intervalMs) || intervalMs < 1) {
+    throw new OrchestratorError("INVALID_RECONCILE_INTERVAL", "Reconcile interval is invalid");
+  }
+  let inFlight: Promise<void> | undefined;
+  let stopped = false;
+  const tick = (): void => {
+    if (stopped || inFlight) {
+      return;
+    }
+    inFlight = (async () => {
+      try {
+        await reconcile();
+      } catch (error) {
+        try {
+          reportFailure(error);
+        } catch {
+          process.stderr.write("RECONCILE_MONITOR_REPORT_FAILED\n");
+          process.exitCode = 1;
+        }
+      } finally {
+        inFlight = undefined;
+      }
+    })();
+  };
+  const timer = setInterval(tick, intervalMs);
+  timer.unref();
+  return {
+    stop: async () => {
+      stopped = true;
+      clearInterval(timer);
+      await inFlight;
+    },
+  };
+}
+
 export function createMcpServer(home?: string): {
   readonly server: McpServer;
   readonly reconcile: () => Promise<{ readonly blockedTasks: readonly string[] }>;
+  readonly startMonitor: (intervalMs?: number) => { readonly stop: () => Promise<void> };
   readonly close: () => void;
 } {
   const runnerFile = path.resolve(import.meta.dirname, "../runner/main.js");
@@ -225,18 +266,32 @@ export function createMcpServer(home?: string): {
   return {
     server,
     reconcile: async () => await runtime.control.reconcile(),
+    startMonitor: (intervalMs) =>
+      startReconcileMonitor(
+        async () => await runtime.control.reconcile(),
+        (error) =>
+          runtime.components.logger.write({
+            level: "error",
+            event: "error",
+            operation: "reconcile",
+            errorCode: error instanceof OrchestratorError ? error.code : "RECONCILE_FAILED",
+            outcome: "fail",
+          }),
+        intervalMs,
+      ),
     close: runtime.close,
   };
 }
 
 async function main(): Promise<void> {
   const runtime = createMcpServer();
-  const shutdown = (): void => {
-    runtime.close();
-  };
-  process.once("exit", shutdown);
   await runtime.reconcile();
   await runtime.server.connect(new StdioServerTransport());
+  const monitor = runtime.startMonitor();
+  process.once("exit", () => {
+    void monitor.stop();
+    runtime.close();
+  });
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(import.meta.filename)) {

@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { AntigravityAdapter } from "../../src/adapters/antigravity.js";
+import { parseExecutionResult } from "../../src/adapters/common.js";
 import { CursorAdapter } from "../../src/adapters/cursor.js";
 import { WorkerAdapterRegistry } from "../../src/adapters/registry.js";
 import { WorkbuddyAdapter } from "../../src/adapters/workbuddy.js";
@@ -24,6 +25,7 @@ import {
   startImplementation,
 } from "../../src/domain/task.js";
 import type { TaskAggregate } from "../../src/domain/types.js";
+import { OrchestratorError } from "../../src/shared/errors.js";
 
 const AT = "2026-09-14T06:00:00.000Z";
 const FINGERPRINT = "a".repeat(64);
@@ -221,6 +223,50 @@ void test("Antigravity review parses native structured output without persisting
   } finally {
     fs.rmSync(temporary, { recursive: true, force: true });
   }
+});
+
+void test("malformed Reviewer schema is a typed executor fault, not an unclassified Error", async () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "orchestrator-invalid-review-"));
+  const structured = { verdict: "UNKNOWN", summary: "invalid", findings: [] };
+  const stdout = JSON.stringify({
+    event: "result",
+    result: {
+      status: "SUCCESS",
+      response: JSON.stringify(structured),
+      structured_output: structured,
+    },
+  });
+  try {
+    const adapter = new AntigravityAdapter(new RecordingProcessRunner([result(stdout)]));
+    await assert.rejects(
+      async () =>
+        await adapter.review({
+          task: reviewTask(),
+          project: project(temporary),
+          profile: worker("antigravity"),
+          worktreePath: temporary,
+          runtimeDirectory: temporary,
+          timeoutMs: 1_000,
+          maxCaptureBytes: 10_000,
+          candidatePatch: "candidate context",
+        }),
+      (error: unknown) =>
+        error instanceof OrchestratorError && error.code === "REVIEW_RESULT_INVALID",
+    );
+  } finally {
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
+void test("native ERROR result has a distinct stable code without logging its raw response", () => {
+  const stdout = JSON.stringify({
+    event: "result",
+    result: { status: "ERROR", response: "PRIVATE_PROVIDER_RESPONSE", error: "private detail" },
+  });
+  assert.throws(
+    () => parseExecutionResult("antigravity", result(stdout)),
+    (error: unknown) => error instanceof OrchestratorError && error.code === "WORKER_RESULT_ERROR",
+  );
 });
 
 void test("WorkBuddy and ZCode retain independent Adapter invocation contracts", async () => {

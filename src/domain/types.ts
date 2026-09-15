@@ -116,7 +116,9 @@ export interface ExternalBlock {
     | "provider_rate_limit"
     | "semantic_stall"
     | "process_lost"
-    | "environment_unavailable";
+    | "environment_unavailable"
+    | "execution_timeout"
+    | "runtime_fault";
   readonly message: string;
   readonly blockedAt: string;
   readonly resumeState: Exclude<

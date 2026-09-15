@@ -7,10 +7,12 @@ import test from "node:test";
 
 import {
   processIdentity,
+  processIsAlive,
   waitForProcessExit,
   waitForProcessIdentity,
 } from "../../src/infrastructure/process/process-identity.js";
 import { terminateProcessTree } from "../../src/infrastructure/process/local-process-runner.js";
+import { LocalProcessSupervisor } from "../../src/infrastructure/process/local-process-supervisor.js";
 import { SqliteRuntimeRegistry } from "../../src/infrastructure/sqlite/runtime-registry.js";
 import { OrchestratorError } from "../../src/shared/errors.js";
 
@@ -48,6 +50,28 @@ void test("runtime registry persists creation identity and rejects stale PID own
       terminateProcessTree(child.pid);
       await waitForProcessExit(child.pid);
     }
+    registry.close();
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
+void test("a Worker that exits before identity lookup does not turn a completed run into a fault", async () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "orchestrator-short-worker-"));
+  const registry = new SqliteRuntimeRegistry(path.join(temporary, "state.db"));
+  const child = spawn(process.execPath, ["-e", "process.exit(0)"], {
+    windowsHide: true,
+    stdio: "ignore",
+  });
+  try {
+    const pid = child.pid;
+    assert.ok(pid);
+    assert.equal(await waitForProcessExit(pid), true);
+    assert.equal(processIsAlive(pid), false);
+    const hooks = new LocalProcessSupervisor(registry).workerHooks("task-short-worker-0001");
+    await hooks.onSpawn(pid);
+    hooks.onExit(pid);
+    assert.equal(registry.get("task-short-worker-0001", "worker"), undefined);
+  } finally {
     registry.close();
     fs.rmSync(temporary, { recursive: true, force: true });
   }

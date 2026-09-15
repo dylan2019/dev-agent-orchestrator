@@ -23,6 +23,7 @@ import type { ProcessSupervisor } from "./ports/process-supervisor.js";
 import type { TaskStore } from "./ports/task-store.js";
 import type { GateExecutor } from "./gate-executor.js";
 import { assertExecutionBinding } from "./execution-profile.js";
+import { externalReasonForExecution } from "./error-classification.js";
 import type { EventLogger } from "./ports/event-logger.js";
 import { startCandidateProgressWatchdog } from "./candidate-progress-watchdog.js";
 import { OrchestratorError } from "../shared/errors.js";
@@ -386,17 +387,7 @@ export class TaskExecutionService {
     }
     const code = errorCode(error);
     const message = errorMessage(error);
-    const externalReason = code.includes("RATE_LIMIT")
-      ? "provider_rate_limit"
-      : code.includes("CAPACITY")
-        ? "provider_capacity"
-        : code.includes("SETUP")
-          ? "environment_unavailable"
-          : code.includes("SEMANTIC_STALL") || code.includes("OUTPUT_LIMIT")
-            ? "semantic_stall"
-            : code.includes("TIMEOUT") || code.includes("PROCESS")
-              ? "process_lost"
-              : undefined;
+    const externalReason = externalReasonForExecution(code, resumeState);
     if (externalReason) {
       return this.persistExternalBlock(current, {
         reason: externalReason,

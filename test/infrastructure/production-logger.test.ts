@@ -7,7 +7,7 @@ import test from "node:test";
 import type { ProductionLogEvent } from "../../src/application/ports/event-logger.js";
 import { ProductionLogger } from "../../src/infrastructure/logging/production-logger.js";
 
-void test("production logger persists only whitelisted key fields and deduplicates unchanged events", () => {
+void test("production logger persists repeated key events without leaking forbidden fields", () => {
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "orchestrator-log-"));
   const file = path.join(temporary, "events.jsonl");
   try {
@@ -23,12 +23,12 @@ void test("production logger persists only whitelisted key fields and deduplicat
       assistant: "DO_NOT_PERSIST_DELTA",
     } as ProductionLogEvent;
     assert.equal(logger.write(unsafe, new Date("2026-09-14T06:00:00.000Z")), true);
-    assert.equal(logger.write(unsafe, new Date("2026-09-14T06:00:01.000Z")), false);
+    assert.equal(logger.write(unsafe, new Date("2026-09-14T06:00:01.000Z")), true);
     const persisted = fs.readFileSync(file, "utf8");
     assert.match(persisted, /"event":"error"/);
     assert.match(persisted, /token=\[REDACTED\]/);
     assert.doesNotMatch(persisted, /private-value|DO_NOT_PERSIST/);
-    assert.equal(persisted.trim().split(/\r?\n/).length, 1);
+    assert.equal(persisted.trim().split(/\r?\n/).length, 2);
   } finally {
     fs.rmSync(temporary, { recursive: true, force: true });
   }

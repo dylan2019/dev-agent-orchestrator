@@ -256,6 +256,123 @@ void test("acceptance failure keeps only its exit code and safe classification",
   }
 });
 
+void test("Gate DAG rejects a cycle even if a Project profile bypasses configuration validation", async () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "orchestrator-gate-cycle-"));
+  try {
+    const profile = project(temporary);
+    const cyclic: ProjectProfile = {
+      ...profile,
+      gates: {
+        ...profile.gates,
+        affected: [
+          {
+            id: "first",
+            command: process.execPath,
+            args: ["--version"],
+            dependsOn: ["second"],
+            timeoutMinutes: 1,
+          },
+          {
+            id: "second",
+            command: process.execPath,
+            args: ["--version"],
+            dependsOn: ["first"],
+            timeoutMinutes: 1,
+          },
+        ],
+      },
+    };
+    const executor = new GateExecutor(
+      new FakeProcessRunner(),
+      new FakeCandidateRepository(),
+      new MemoryGateCache(),
+      new ProductionLogger(path.join(temporary, "events.jsonl"), 64_000),
+    );
+    await assert.rejects(
+      async () => await executor.runAffected("task-1", cyclic, temporary),
+      (error: unknown) =>
+        error instanceof OrchestratorError && error.code === "GATE_DEPENDENCY_CYCLE",
+    );
+  } finally {
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
+void test("Gate cwd cannot escape the Candidate Worktree through a filesystem link", async () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "orchestrator-gate-cwd-link-"));
+  const worktree = path.join(temporary, "worktree");
+  const outside = path.join(temporary, "outside");
+  fs.mkdirSync(worktree);
+  fs.mkdirSync(outside);
+  fs.symlinkSync(
+    outside,
+    path.join(worktree, "escaped"),
+    process.platform === "win32" ? "junction" : "dir",
+  );
+  try {
+    const profile = project(temporary);
+    const linked: ProjectProfile = {
+      ...profile,
+      gates: {
+        ...profile.gates,
+        affected: [
+          {
+            id: "linked-cwd",
+            command: process.execPath,
+            args: ["--version"],
+            cwd: "escaped",
+            dependsOn: [],
+            timeoutMinutes: 1,
+          },
+        ],
+      },
+    };
+    const processes = new FakeProcessRunner();
+    const executor = new GateExecutor(
+      processes,
+      new FakeCandidateRepository(),
+      new MemoryGateCache(),
+      new ProductionLogger(path.join(temporary, "events.jsonl"), 64_000),
+    );
+    await assert.rejects(
+      async () => await executor.runAffected("task-1", linked, worktree),
+      (error: unknown) =>
+        error instanceof OrchestratorError && error.code === "GATE_CWD_OUTSIDE_WORKTREE",
+    );
+    assert.equal(processes.calls, 0);
+  } finally {
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
+void test("final acceptance honors declared affected Gate dependencies before running", async () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "orchestrator-acceptance-dependency-"));
+  try {
+    const profile = project(temporary);
+    const required: ProjectProfile = {
+      ...profile,
+      gates: {
+        ...profile.gates,
+        acceptance: { ...profile.gates.acceptance, dependsOn: ["backend"] },
+      },
+    };
+    const processes = new FakeProcessRunner();
+    processes.failAt = 2;
+    const executor = new GateExecutor(
+      processes,
+      new FakeCandidateRepository(),
+      new MemoryGateCache(),
+      new ProductionLogger(path.join(temporary, "events.jsonl"), 64_000),
+    );
+    const result = await executor.runAcceptance("task-1", required, temporary);
+    assert.equal(result.gateId, "backend");
+    assert.equal(result.status, "fail");
+    assert.equal(processes.calls, 2);
+  } finally {
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
 void test("setup Gates run before implementation and cannot modify the Git Candidate", async () => {
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "orchestrator-setup-gate-"));
   try {

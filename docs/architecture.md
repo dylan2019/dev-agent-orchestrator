@@ -79,7 +79,6 @@ Acceptance evidence, approved CandidateSnapshot, commit/tree identities, integra
 
 ```text
 CREATED
-  -> SCOPING
   -> IMPLEMENTING
   -> VERIFYING
   -> AWAITING_CONTROL_REVIEW
@@ -95,12 +94,14 @@ Controlled branches:
 IMPLEMENTING -> SCOPE_APPROVAL_REQUIRED -> IMPLEMENTING
 VERIFYING -> REWORK_REQUIRED -> IMPLEMENTING
 INDEPENDENT_REVIEWING -> REWORK_REQUIRED -> IMPLEMENTING
-active state -> EXTERNAL_BLOCKED -> controlled rework
+active state -> EXTERNAL_BLOCKED -> controlled recovery
 any non-terminal state -> CANCELLED
 attempt budget exhausted -> EXHAUSTED (writer lease released, Candidate retained)
 ```
 
 There is no generic `failed` state. Every blocked or unsuccessful transition has a typed reason and a deterministic set of legal next actions.
+
+The running MCP server reconciles lost Runners periodically with a single-flight scan. A Task still creating its Worktree in this process is not mistaken for a lost Runner; after launch, a bounded registration grace applies. A Reviewer CLI failure blocks externally rather than being mistaken for a Candidate `FAIL` verdict. Recovery from `EXTERNAL_BLOCKED` defaults to rework; an unchanged approved Candidate may re-enter independent review. Delivery may re-enter acceptance only if the Candidate is unchanged and the clean target still points to its original base. A committed Candidate Worktree, changed target, or uncertain integration outcome stays blocked for operator inspection; it is not automatically replayed. Intermediate implementation/verification stages are never resumed directly.
 
 ## 5. Transition invariants
 

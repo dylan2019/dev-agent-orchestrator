@@ -33,6 +33,7 @@ Only the following event families are persisted:
 ```
 
 Fields are omitted when irrelevant. Repeated heartbeats and unchanged state are not logged.
+Consecutive identical key events are retained as separate records; the logger does not silently suppress them.
 
 ## Forbidden content
 

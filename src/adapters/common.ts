@@ -190,12 +190,13 @@ export function parseExecutionResult(
   }
   const nested = asRecord(final.result);
   const status = lowerToken(nested?.status ?? final.status, "success");
-  if (
-    status === "failed" ||
-    status === "error" ||
-    final.is_error === true ||
-    nested?.is_error === true
-  ) {
+  if (status === "error") {
+    throw new OrchestratorError("WORKER_RESULT_ERROR", "Worker returned an error result", {
+      adapter,
+      status,
+    });
+  }
+  if (status === "failed" || final.is_error === true || nested?.is_error === true) {
     throw new OrchestratorError("WORKER_RESULT_FAILED", "Worker returned a failed result", {
       adapter,
       status,
@@ -234,7 +235,14 @@ export function parseReviewResult(
       throw new OrchestratorError("REVIEW_RESULT_INVALID", "Reviewer did not return JSON");
     }
   }
-  const review = ReviewSchema.parse(value);
+  const parsed = ReviewSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new OrchestratorError(
+      "REVIEW_RESULT_INVALID",
+      "Reviewer result does not match its schema",
+    );
+  }
+  const review = parsed.data;
   return {
     summary: review.summary,
     verdict: review.verdict.toLowerCase() as "pass" | "fail",

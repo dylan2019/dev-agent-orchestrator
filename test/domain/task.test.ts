@@ -6,6 +6,7 @@ import { DomainError } from "../../src/domain/errors.js";
 import {
   approveDelivery,
   approveScope,
+  blockExternally,
   completeDelivery,
   completeVerification,
   createTask,
@@ -13,6 +14,7 @@ import {
   recordControlReview,
   recordIndependentReview,
   requireRework,
+  resumeExternalBlock,
   requestScopeApproval,
   startIndependentReviewAttempt,
   startImplementation,
@@ -72,6 +74,20 @@ void test("Task follows control review before independent review and delivery", 
     model: "review-model",
     occurredAt: AT,
   }).task;
+  const blockedReview = blockExternally(current, {
+    reason: "process_lost",
+    message: "Review Runner stopped",
+    blockedAt: AT,
+    resumeState: "INDEPENDENT_REVIEWING",
+  }).task;
+  assert.equal(
+    resumeExternalBlock(blockedReview, {
+      occurredAt: AT,
+      targetState: "INDEPENDENT_REVIEWING",
+      verifiedCandidateFingerprint: FIRST,
+    }).task.state,
+    "INDEPENDENT_REVIEWING",
+  );
   current = recordIndependentReview(current, {
     candidateFingerprint: FIRST,
     executorId: "reviewer",
@@ -89,6 +105,31 @@ void test("Task follows control review before independent review and delivery", 
     push: true,
     occurredAt: AT,
   }).task;
+  const blockedDelivery = blockExternally(current, {
+    reason: "process_lost",
+    message: "Delivery Runner stopped",
+    blockedAt: AT,
+    resumeState: "ACCEPTING",
+  }).task;
+  assert.equal(
+    resumeExternalBlock(blockedDelivery, {
+      occurredAt: AT,
+      targetState: "ACCEPTING",
+      verifiedCandidateFingerprint: FIRST,
+      verifiedTargetHead: BASE,
+    }).task.state,
+    "ACCEPTING",
+  );
+  assert.throws(
+    () =>
+      resumeExternalBlock(blockedDelivery, {
+        occurredAt: AT,
+        targetState: "ACCEPTING",
+        verifiedCandidateFingerprint: FIRST,
+        verifiedTargetHead: "2".repeat(40),
+      }),
+    (error: unknown) => error instanceof DomainError && error.code === "DELIVERY_OUTCOME_UNKNOWN",
+  );
   const failedAcceptance = requireRework(current, {
     reason: "Acceptance Gate exited nonzero",
     errorCode: "GATE_EXIT_NONZERO",

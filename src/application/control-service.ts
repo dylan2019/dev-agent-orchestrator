@@ -138,6 +138,8 @@ function legalDecisions(task: TaskAggregate): readonly TaskDecision["action"][] 
 }
 
 export class ControlService {
+  private readonly pendingStarts = new Map<string, number | null>();
+
   public constructor(
     private readonly configRepository: ConfigFileRepository,
     private readonly store: TaskStore,
@@ -162,12 +164,24 @@ export class ControlService {
     const blockedTasks: string[] = [];
     for (const task of this.store.list()) {
       if (!activeStates.has(task.state)) {
+        this.pendingStarts.delete(task.id);
         continue;
       }
       const runner = this.runtime.get(task.id, "runner");
       if (runner && this.supervisor.status(runner) === "owned") {
+        this.pendingStarts.delete(task.id);
         continue;
       }
+      const pendingStart = this.pendingStarts.get(task.id);
+      if (task.state === "CREATED" && this.pendingStarts.has(task.id)) {
+        if (
+          pendingStart === null ||
+          (pendingStart !== undefined && observedAtMs - pendingStart < 30_000)
+        ) {
+          continue;
+        }
+      }
+      this.pendingStarts.delete(task.id);
       if (
         !runner &&
         task.state === "CREATED" &&
@@ -191,7 +205,7 @@ export class ControlService {
       }
       const blocked = blockExternally(latest, {
         reason: "process_lost",
-        message: "Task Runner is not alive after runtime restart",
+        message: "Task Runner is no longer alive",
         blockedAt: timestamp(),
         resumeState: latest.state as
           | "CREATED"
@@ -216,7 +230,7 @@ export class ControlService {
         taskId: latest.id,
         state: blocked.task.state,
         errorCode: "process_lost",
-        message: "Task Runner is not alive after runtime restart",
+        message: "Task Runner is no longer alive",
         outcome: "blocked",
       });
     }
@@ -265,6 +279,7 @@ export class ControlService {
       projectId,
       state: created.task.state,
     });
+    this.pendingStarts.set(created.task.id, null);
     let worktreePath: string | undefined;
     try {
       worktreePath = await this.candidates.createWorktree(
@@ -273,8 +288,10 @@ export class ControlService {
         state.head,
       );
       await this.launcher.launch(created.task.id);
+      this.pendingStarts.set(created.task.id, Date.now());
       return created.task;
     } catch (error) {
+      this.pendingStarts.delete(created.task.id);
       const cancelled = cancelTask(created.task, timestamp(), "Task startup failed");
       this.store.saveAndReleaseWriterLease(created.task.revision, cancelled);
       if (worktreePath && fs.existsSync(worktreePath)) {
@@ -414,7 +431,7 @@ export class ControlService {
             occurredAt: timestamp(),
           });
         } else if (task.state === "EXTERNAL_BLOCKED") {
-          transition = resumeExternalBlock(task, timestamp());
+          transition = await this.resumeBlockedTask(task);
         } else {
           transition = confirmRework(task, decision.reason, timestamp());
         }
@@ -474,5 +491,61 @@ export class ControlService {
         this.runtime.clear(taskIdValue, record.role, record.pid, record.identity);
       }
     }
+  }
+
+  private async resumeBlockedTask(task: TaskAggregate): Promise<TransitionResult> {
+    const block = task.externalBlock;
+    if (!block) {
+      throw new OrchestratorError("EXTERNAL_BLOCK_MISSING", "Task has no external block evidence");
+    }
+    const occurredAt = timestamp();
+    if (block.resumeState !== "INDEPENDENT_REVIEWING" && block.resumeState !== "ACCEPTING") {
+      return resumeExternalBlock(task, { occurredAt, targetState: "REWORK_REQUIRED" });
+    }
+    const binding = assertExecutionBinding(this.configRepository.read(), task);
+    const worktreePath = path.resolve(binding.project.worktreeRoot, task.id);
+    const deliveryRecovery = block.resumeState === "ACCEPTING";
+    if (!fs.existsSync(worktreePath)) {
+      throw new OrchestratorError(
+        deliveryRecovery ? "DELIVERY_OUTCOME_UNKNOWN" : "CANDIDATE_WORKTREE_MISSING",
+        "Blocked Task cannot resume without its Candidate Worktree",
+        { taskId: task.id },
+      );
+    }
+    const candidate = task.candidate;
+    const inspection = await this.candidates.inspect(worktreePath);
+    if (inspection.fingerprint !== candidate?.fingerprint) {
+      throw new OrchestratorError(
+        deliveryRecovery ? "DELIVERY_OUTCOME_UNKNOWN" : "CANDIDATE_CHANGED_BEFORE_RESUME",
+        "Blocked Task Candidate cannot be verified for stage recovery",
+        { taskId: task.id },
+      );
+    }
+    if (!deliveryRecovery) {
+      return resumeExternalBlock(task, {
+        occurredAt,
+        targetState: "INDEPENDENT_REVIEWING",
+        verifiedCandidateFingerprint: inspection.fingerprint,
+      });
+    }
+    const target = await this.candidates.inspectProject(binding.project);
+    if (
+      !samePath(target.root, binding.project.repository) ||
+      !target.clean ||
+      target.branch !== binding.project.targetBranch ||
+      target.head !== candidate.baseCommit
+    ) {
+      throw new OrchestratorError(
+        "DELIVERY_OUTCOME_UNKNOWN",
+        "Delivery target changed before safe recovery could be proven",
+        { taskId: task.id },
+      );
+    }
+    return resumeExternalBlock(task, {
+      occurredAt,
+      targetState: "ACCEPTING",
+      verifiedCandidateFingerprint: inspection.fingerprint,
+      verifiedTargetHead: target.head,
+    });
   }
 }

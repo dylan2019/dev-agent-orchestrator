@@ -24,6 +24,9 @@ export class LocalProcessSupervisor implements ProcessSupervisor {
       onSpawn: async (pid) => {
         const identity = await waitForProcessIdentity(pid);
         if (!identity) {
+          if (!processIsAlive(pid)) {
+            return;
+          }
           throw new OrchestratorError(
             "PROCESS_IDENTITY_UNAVAILABLE",
             "Worker identity is unavailable",

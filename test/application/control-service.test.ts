@@ -6,6 +6,7 @@ import test from "node:test";
 
 import { ControlService } from "../../src/application/control-service.js";
 import { DoctorService } from "../../src/application/doctor-service.js";
+import { resolveExecutionBinding } from "../../src/application/execution-profile.js";
 import type { WorkerAdapterRegistry } from "../../src/adapters/registry.js";
 import type {
   CandidateFilePatch,
@@ -19,7 +20,17 @@ import type { RunnerLauncher } from "../../src/application/ports/runner-launcher
 import { ConfigFileRepository } from "../../src/configuration/file-repository.js";
 import { CONFIG_VERSION, type OrchestratorConfig } from "../../src/configuration/schema.js";
 import { DEFAULT_BUDGETS } from "../../src/domain/budgets.js";
-import { createTask } from "../../src/domain/task.js";
+import {
+  approveDelivery,
+  blockExternally,
+  completeVerification,
+  createTask,
+  recordCandidate,
+  recordControlReview,
+  recordIndependentReview,
+  startImplementation,
+  startIndependentReviewAttempt,
+} from "../../src/domain/task.js";
 import { ProductionLogger } from "../../src/infrastructure/logging/production-logger.js";
 import { LocalProcessSupervisor } from "../../src/infrastructure/process/local-process-supervisor.js";
 import { SqliteRuntimeRegistry } from "../../src/infrastructure/sqlite/runtime-registry.js";
@@ -39,13 +50,15 @@ class FakeCandidates implements CandidateRepository {
   public constructor(
     private readonly project: OrchestratorConfig["projects"][string],
     private readonly reportedRoot = project.repository,
+    private readonly candidateInspection?: CandidateInspection,
+    private readonly targetHead = "1".repeat(40),
   ) {}
 
   public async inspectProject(): Promise<ProjectGitState> {
     return await Promise.resolve({
       root: this.reportedRoot,
       branch: this.project.targetBranch,
-      head: "1".repeat(40),
+      head: this.targetHead,
       clean: true,
       status: "",
     });
@@ -61,7 +74,9 @@ class FakeCandidates implements CandidateRepository {
   }
 
   public inspect(): Promise<CandidateInspection> {
-    return Promise.reject(new Error("not used"));
+    return this.candidateInspection
+      ? Promise.resolve(this.candidateInspection)
+      : Promise.reject(new Error("not used"));
   }
 
   public hashRelevantPaths(): Promise<string> {
@@ -90,6 +105,22 @@ class FakeCandidates implements CandidateRepository {
 
   public integrate(): Promise<void> {
     return Promise.reject(new Error("not used"));
+  }
+}
+
+class PendingCandidates extends FakeCandidates {
+  public started: (() => void) | undefined;
+  public release: (() => void) | undefined;
+
+  public override async createWorktree(
+    project: OrchestratorConfig["projects"][string],
+    taskId: string,
+  ): Promise<string> {
+    this.started?.();
+    await new Promise<void>((resolve) => {
+      this.release = resolve;
+    });
+    return await super.createWorktree(project, taskId);
   }
 }
 
@@ -260,6 +291,57 @@ void test("control service accepts canonical Git roots reached through a filesys
   }
 });
 
+void test("periodic reconcile does not block a Task while its Worktree is still being created", async () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "orchestrator-pending-start-"));
+  const configuration = config(temporary);
+  const project = configuration.projects.example;
+  assert.ok(project);
+  fs.mkdirSync(project.repository, { recursive: true });
+  const configRepository = new ConfigFileRepository(path.join(temporary, "config.json"));
+  configRepository.write(configuration);
+  const store = new SqliteTaskStore(path.join(temporary, "state.db"));
+  const registry = new SqliteRuntimeRegistry(path.join(temporary, "state.db"));
+  const candidates = new PendingCandidates(project);
+  const control = new ControlService(
+    configRepository,
+    store,
+    candidates,
+    new FakeLauncher(),
+    registry,
+    new LocalProcessSupervisor(registry),
+    new ProductionLogger(path.join(temporary, "events.jsonl"), 64_000),
+  );
+  let notifyStarted: (() => void) | undefined;
+  const started = new Promise<void>((resolve) => {
+    notifyStarted = resolve;
+  });
+  candidates.started = notifyStarted;
+  const start = control.start({
+    objective: "Prepare a large Worktree without false process loss",
+    risk: "normal",
+    initialScope: ["src"],
+  });
+  try {
+    await started;
+    const pending = store.list()[0];
+    assert.ok(pending);
+    assert.equal(pending.state, "CREATED");
+    assert.deepEqual((await control.reconcile(Date.now() + 60_000)).blockedTasks, []);
+    assert.equal(store.get(pending.id).state, "CREATED");
+    candidates.release?.();
+    const launched = await start;
+    assert.equal(launched.id, pending.id);
+    assert.deepEqual((await control.reconcile(Date.now() + 60_000)).blockedTasks, [pending.id]);
+    assert.equal(store.get(pending.id).state, "EXTERNAL_BLOCKED");
+  } finally {
+    candidates.release?.();
+    await start;
+    registry.close();
+    store.close();
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
 void test("doctor reports a leased Task whose Candidate Worktree is missing", async () => {
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "orchestrator-missing-worktree-"));
   const configuration = config(temporary);
@@ -274,7 +356,11 @@ void test("doctor reports a leased Task whose Candidate Worktree is missing", as
     projectId: "example",
     objective: "Diagnose a missing leased Candidate Worktree",
     risk: "normal",
-    executionProfileFingerprint: "f".repeat(64),
+    executionProfileFingerprint: resolveExecutionBinding(
+      configRepository.read(),
+      "example",
+      "normal",
+    ).fingerprint,
     implementationWorkerId: "implementation",
     reviewWorkerId: "review",
     budget: DEFAULT_BUDGETS.normal,
@@ -298,6 +384,143 @@ void test("doctor reports a leased Task whose Candidate Worktree is missing", as
     assert.equal(report.ok, false);
     assert.ok(report.issues.some((issue) => issue.code === "CANDIDATE_WORKTREE_MISSING"));
   } finally {
+    store.close();
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
+void test("delivery recovery refuses an advanced target and resumes only the unchanged approved Candidate", async () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "orchestrator-safe-delivery-resume-"));
+  const at = "2026-09-15T06:00:00.000Z";
+  const configuration = config(temporary);
+  const project = configuration.projects.example;
+  assert.ok(project);
+  fs.mkdirSync(project.repository, { recursive: true });
+  const configRepository = new ConfigFileRepository(path.join(temporary, "config.json"));
+  configRepository.write(configuration);
+  const store = new SqliteTaskStore(path.join(temporary, "state.db"));
+  const runtime = new SqliteRuntimeRegistry(path.join(temporary, "state.db"));
+  const fingerprint = "a".repeat(64);
+  let current = createTask({
+    id: "task-safe-delivery-0001",
+    projectId: "example",
+    objective: "Recover reviewed delivery without repeating implementation",
+    risk: "normal",
+    executionProfileFingerprint: resolveExecutionBinding(
+      configRepository.read(),
+      "example",
+      "normal",
+    ).fingerprint,
+    implementationWorkerId: "implementation",
+    reviewWorkerId: "review",
+    budget: DEFAULT_BUDGETS.normal,
+    initialScope: ["src"],
+    occurredAt: at,
+  }).task;
+  current = startImplementation(current, {
+    executorId: "implementation",
+    model: "model",
+    occurredAt: at,
+  }).task;
+  current = recordCandidate(current, {
+    baseCommit: "1".repeat(40),
+    fingerprint,
+    changedFiles: ["src/a.ts"],
+    changedLines: 1,
+    occurredAt: at,
+  }).task;
+  current = completeVerification(
+    current,
+    [{ gateId: "unit", inputHash: "hash", status: "pass", durationMs: 1 }],
+    at,
+  ).task;
+  current = recordControlReview(current, {
+    expectedCandidateFingerprint: fingerprint,
+    decision: "approve",
+    summary: "Candidate verified",
+    occurredAt: at,
+  }).task;
+  current = startIndependentReviewAttempt(current, {
+    executorId: "review",
+    model: "model",
+    occurredAt: at,
+  }).task;
+  current = recordIndependentReview(current, {
+    candidateFingerprint: fingerprint,
+    executorId: "review",
+    model: "model",
+    verdict: "pass",
+    summary: "Review passed",
+    findings: [],
+    reviewedAt: at,
+  }).task;
+  current = approveDelivery(current, {
+    expectedCandidateFingerprint: fingerprint,
+    idempotencyKey: "delivery:safe:0001",
+    commitMessage: "test: safe delivery",
+    push: false,
+    occurredAt: at,
+  }).task;
+  const blocked = blockExternally(current, {
+    reason: "process_lost",
+    message: "Delivery Runner stopped",
+    blockedAt: at,
+    resumeState: "ACCEPTING",
+  });
+  store.createWithWriterLease(blocked, at);
+  const worktreePath = path.join(project.worktreeRoot, blocked.task.id);
+  fs.mkdirSync(worktreePath, { recursive: true });
+  const candidate: CandidateInspection = {
+    worktreePath,
+    baseCommit: "1".repeat(40),
+    fingerprint,
+    changedFiles: ["src/a.ts"],
+    changedLines: 1,
+  };
+  const logger = new ProductionLogger(path.join(temporary, "events.jsonl"), 64_000);
+  const supervisor = new LocalProcessSupervisor(runtime);
+  try {
+    const unsafe = new ControlService(
+      configRepository,
+      store,
+      new FakeCandidates(project, project.repository, candidate, "2".repeat(40)),
+      new FakeLauncher(),
+      runtime,
+      supervisor,
+      logger,
+    );
+    await assert.rejects(
+      async () =>
+        await unsafe.decide({
+          action: "request_rework",
+          taskId: blocked.task.id,
+          expectedRevision: blocked.task.revision,
+          reason: "Retry delivery",
+        }),
+      (error: unknown) =>
+        error instanceof OrchestratorError && error.code === "DELIVERY_OUTCOME_UNKNOWN",
+    );
+    assert.equal(store.get(blocked.task.id).state, "EXTERNAL_BLOCKED");
+    const safe = new ControlService(
+      configRepository,
+      store,
+      new FakeCandidates(project, project.repository, candidate),
+      new FakeLauncher(),
+      runtime,
+      supervisor,
+      logger,
+    );
+    const resumed = await safe.decide({
+      action: "request_rework",
+      taskId: blocked.task.id,
+      expectedRevision: blocked.task.revision,
+      reason: "Retry verified delivery",
+    });
+    assert.equal(resumed.state, "ACCEPTING");
+    assert.equal(resumed.attempts.filter((attempt) => attempt.kind === "implementation").length, 1);
+    assert.equal(store.writerLeaseOwner("example"), blocked.task.id);
+  } finally {
+    runtime.close();
     store.close();
     fs.rmSync(temporary, { recursive: true, force: true });
   }

@@ -9,6 +9,7 @@ import { CONFIG_VERSION, type OrchestratorConfig } from "../../src/configuration
 import { DEFAULT_BUDGETS } from "../../src/domain/budgets.js";
 import type { TaskAggregate, TaskState } from "../../src/domain/types.js";
 import { discoverGit } from "../../src/interfaces/cli/discovery.js";
+import { createMcpServer } from "../../src/interfaces/mcp/server.js";
 import { LocalProcessRunner } from "../../src/infrastructure/process/local-process-runner.js";
 import { createControlRuntime } from "../../src/runtime/control-runtime.js";
 
@@ -24,6 +25,8 @@ async function git(cwd: string, args: readonly string[]): Promise<void> {
 function writeWorkers(
   temporary: string,
   scopeExpansion = false,
+  hangImplementation = false,
+  failReview = false,
 ): { implementation: string; review: string } {
   const implementation = path.join(temporary, "implementation-worker.mjs");
   const review = path.join(temporary, "review-worker.mjs");
@@ -39,7 +42,9 @@ function writeWorkers(
         ? ['fs.writeFileSync(".env.nacos.example", "NACOS_ENDPOINT=\\n", "utf8");']
         : []),
       'console.log(JSON.stringify({ type: "result", subtype: "success", result: "implemented candidate", session_id: "implementation-session" }));',
-      "await new Promise((resolve) => setTimeout(resolve, 500));",
+      ...(hangImplementation
+        ? ["setInterval(() => {}, 1000);", "await new Promise(() => {});"]
+        : ["await new Promise((resolve) => setTimeout(resolve, 500));"]),
     ].join("\n"),
     "utf8",
   );
@@ -50,8 +55,14 @@ function writeWorkers(
       'if (process.argv.includes("--help")) { console.log("--input-format --output-format --json-schema --project --model --dangerously-skip-permissions --add-dir"); process.exit(0); }',
       'if (process.argv.includes("models")) { console.log("review-model"); process.exit(0); }',
       "for await (const chunk of process.stdin) { void chunk; }",
-      'const review = { verdict: "PASS", summary: "independent review passed", findings: [] };',
-      'console.log(JSON.stringify({ event: "result", result: { status: "SUCCESS", response: JSON.stringify(review), structured_output: review, conversation_id: "review-session" } }));',
+      ...(failReview
+        ? [
+            'console.log(JSON.stringify({ event: "result", result: { status: "FAILED", response: "reviewer execution failed" } }));',
+          ]
+        : [
+            'const review = { verdict: "PASS", summary: "independent review passed", findings: [] };',
+            'console.log(JSON.stringify({ event: "result", result: { status: "SUCCESS", response: JSON.stringify(review), structured_output: review, conversation_id: "review-session" } }));',
+          ]),
       "await new Promise((resolve) => setTimeout(resolve, 500));",
     ].join("\n"),
     "utf8",
@@ -271,6 +282,179 @@ void test("clean public workflow delivers one Task without Candidate replay or n
   }
 });
 
+void test("Reviewer CLI failure blocks externally without redoing its approved Candidate", async () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "orchestrator-reviewer-failure-"));
+  const repository = path.join(temporary, "repository");
+  const home = path.join(temporary, "home");
+  fs.mkdirSync(repository);
+  let runtime: ReturnType<typeof createControlRuntime> | undefined;
+  let task: TaskAggregate | undefined;
+  try {
+    await git(repository, ["init", "-b", "main"]);
+    await git(repository, ["config", "user.name", "Reviewer Failure Test"]);
+    await git(repository, ["config", "user.email", "reviewer-failure@example.invalid"]);
+    fs.writeFileSync(path.join(repository, "README.md"), "base\n", "utf8");
+    await git(repository, ["add", "README.md"]);
+    await git(repository, ["commit", "-m", "test: baseline"]);
+    const workers = writeWorkers(temporary, false, false, true);
+    new ConfigFileRepository(path.join(home, "config.json")).write(
+      config(temporary, repository, workers),
+    );
+    const runnerFile = path.resolve(
+      import.meta.dirname,
+      "..",
+      "..",
+      "src",
+      "interfaces",
+      "runner",
+      "main.js",
+    );
+    const activeRuntime = createControlRuntime(runnerFile, home);
+    runtime = activeRuntime;
+    task = await activeRuntime.control.start({
+      objective: "Keep a valid Candidate when the external Reviewer itself fails",
+      risk: "normal",
+      initialScope: ["src.txt"],
+    });
+    const taskId = task.id;
+    task = await waitForState(
+      async (revision) => await activeRuntime.control.observe(taskId, revision, 5_000),
+      task,
+      "AWAITING_CONTROL_REVIEW",
+    );
+    const fingerprint = task.candidate?.fingerprint;
+    assert.ok(fingerprint);
+    task = await activeRuntime.control.decide({
+      action: "approve_candidate",
+      taskId,
+      expectedRevision: task.revision,
+      expectedFingerprint: fingerprint,
+      summary: "Candidate content is valid",
+    });
+    task = await waitForState(
+      async (revision) => await activeRuntime.control.observe(taskId, revision, 5_000),
+      task,
+      "EXTERNAL_BLOCKED",
+    );
+    assert.equal(task.externalBlock?.reason, "runtime_fault");
+    assert.equal(task.externalBlock.resumeState, "INDEPENDENT_REVIEWING");
+    assert.equal(task.candidate?.fingerprint, fingerprint);
+    assert.equal(task.attempts.filter((attempt) => attempt.kind === "implementation").length, 1);
+    assert.equal(activeRuntime.components.store.writerLeaseOwner("example"), taskId);
+    task = await activeRuntime.control.decide({
+      action: "cancel",
+      taskId,
+      expectedRevision: task.revision,
+      reason: "reviewer failure classified",
+    });
+    assert.equal(activeRuntime.components.store.writerLeaseOwner("example"), undefined);
+  } finally {
+    if (runtime && task && task.state !== "CANCELLED" && task.state !== "COMMITTED") {
+      try {
+        const current = runtime.control.get(task.id);
+        await runtime.control.decide({
+          action: "cancel",
+          taskId: current.id,
+          expectedRevision: current.revision,
+          reason: "test cleanup",
+        });
+      } catch {
+        // The temporary repository remains bounded to this test root.
+      }
+    }
+    runtime?.close();
+    await new Promise<void>((resolve) => setTimeout(resolve, 500));
+    fs.rmSync(temporary, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+  }
+});
+
+void test("running MCP monitor blocks a Task after its Runner is killed", async () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "orchestrator-runner-kill-"));
+  const repository = path.join(temporary, "repository");
+  const home = path.join(temporary, "home");
+  fs.mkdirSync(repository);
+  let runtime: ReturnType<typeof createControlRuntime> | undefined;
+  let mcp: ReturnType<typeof createMcpServer> | undefined;
+  let monitor: ReturnType<ReturnType<typeof createMcpServer>["startMonitor"]> | undefined;
+  let task: TaskAggregate | undefined;
+  try {
+    await git(repository, ["init", "-b", "main"]);
+    await git(repository, ["config", "user.name", "Runner Kill Test"]);
+    await git(repository, ["config", "user.email", "runner-kill@example.invalid"]);
+    fs.writeFileSync(path.join(repository, "README.md"), "base\n", "utf8");
+    await git(repository, ["add", "README.md"]);
+    await git(repository, ["commit", "-m", "test: baseline"]);
+    const workers = writeWorkers(temporary, false, true);
+    new ConfigFileRepository(path.join(home, "config.json")).write(
+      config(temporary, repository, workers),
+    );
+    const runnerFile = path.resolve(
+      import.meta.dirname,
+      "..",
+      "..",
+      "src",
+      "interfaces",
+      "runner",
+      "main.js",
+    );
+    const activeRuntime = createControlRuntime(runnerFile, home);
+    runtime = activeRuntime;
+    task = await activeRuntime.control.start({
+      objective: "Detect a killed Runner without waiting for an MCP restart",
+      risk: "normal",
+      initialScope: ["src.txt"],
+    });
+    const taskId = task.id;
+    const deadline = Date.now() + 15_000;
+    let runner = activeRuntime.components.runtimeRegistry.get(taskId, "runner");
+    let worker = activeRuntime.components.runtimeRegistry.get(taskId, "worker");
+    while ((!runner || !worker) && Date.now() < deadline) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      runner = activeRuntime.components.runtimeRegistry.get(taskId, "runner");
+      worker = activeRuntime.components.runtimeRegistry.get(taskId, "worker");
+    }
+    assert.ok(runner);
+    assert.ok(worker);
+    mcp = createMcpServer(home);
+    monitor = mcp.startMonitor(200);
+    process.kill(runner.pid, "SIGKILL");
+    task = await waitForState(
+      async (revision) => await activeRuntime.control.observe(taskId, revision, 5_000),
+      task,
+      "EXTERNAL_BLOCKED",
+    );
+    assert.equal(task.externalBlock?.reason, "process_lost");
+    assert.deepEqual(activeRuntime.components.runtimeRegistry.list(taskId), []);
+    assert.equal(activeRuntime.components.store.writerLeaseOwner("example"), taskId);
+    task = await activeRuntime.control.decide({
+      action: "cancel",
+      taskId,
+      expectedRevision: task.revision,
+      reason: "runner kill recovery verified",
+    });
+    assert.equal(activeRuntime.components.store.writerLeaseOwner("example"), undefined);
+  } finally {
+    await monitor?.stop();
+    mcp?.close();
+    if (runtime && task && task.state !== "CANCELLED" && task.state !== "COMMITTED") {
+      try {
+        const current = runtime.control.get(task.id);
+        await runtime.control.decide({
+          action: "cancel",
+          taskId: current.id,
+          expectedRevision: current.revision,
+          reason: "test cleanup",
+        });
+      } catch {
+        // The temporary repository remains bounded to this test root.
+      }
+    }
+    runtime?.close();
+    await new Promise<void>((resolve) => setTimeout(resolve, 500));
+    fs.rmSync(temporary, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+  }
+});
+
 void test("scope expansion continues one Task and releases its lease when attempts exhaust", async () => {
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "orchestrator-scope-e2e-"));
   const repository = path.join(temporary, "repository");
@@ -315,6 +499,13 @@ void test("scope expansion continues one Task and releases its lease when attemp
       async (revision) => await activeRuntime.control.observe(taskIdValue, revision, 5_000),
       task,
       "SCOPE_APPROVAL_REQUIRED",
+      () => ({
+        task: activeRuntime.control.get(taskIdValue),
+        runtime: activeRuntime.components.runtimeRegistry.list(taskIdValue),
+        events: fs.existsSync(path.join(home, "logs", "events.jsonl"))
+          ? fs.readFileSync(path.join(home, "logs", "events.jsonl"), "utf8")
+          : "missing",
+      }),
     );
     const candidate = await activeRuntime.control.candidate(task.id, "manifest", 10_000);
     assert.deepEqual(candidate.changedFiles, [".env.nacos.example", "src.txt"]);
@@ -331,6 +522,12 @@ void test("scope expansion continues one Task and releases its lease when attemp
       async (revision) => await activeRuntime.control.observe(taskIdValue, revision, 5_000),
       task,
       "AWAITING_CONTROL_REVIEW",
+      () => ({
+        runtime: activeRuntime.components.runtimeRegistry.list(taskIdValue),
+        events: fs.existsSync(path.join(home, "logs", "events.jsonl"))
+          ? fs.readFileSync(path.join(home, "logs", "events.jsonl"), "utf8")
+          : "missing",
+      }),
     );
     assert.equal(task.id, originalTaskId);
     assert.equal(task.scopeGrants.length, 2);

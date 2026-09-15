@@ -1,4 +1,6 @@
 import { TaskExecutionService } from "../../application/task-execution-service.js";
+import { externalReasonForCode } from "../../application/error-classification.js";
+import { DomainError } from "../../domain/errors.js";
 import { blockExternally } from "../../domain/task.js";
 import { processIdentity } from "../../infrastructure/process/process-identity.js";
 import { createRuntimeComponents } from "../../runtime/components.js";
@@ -41,6 +43,11 @@ try {
   );
   await execution.advance(taskId);
 } catch (error) {
+  const code =
+    error instanceof OrchestratorError || error instanceof DomainError
+      ? error.code
+      : "RUNNER_UNHANDLED_ERROR";
+  const reason = externalReasonForCode(code) ?? "runtime_fault";
   try {
     const task = components.store.get(taskId);
     if (
@@ -54,8 +61,8 @@ try {
       ].includes(task.state)
     ) {
       const blocked = blockExternally(task, {
-        reason: "process_lost",
-        message: error instanceof Error ? error.message : String(error),
+        reason,
+        message: "Task Runner stopped after an unhandled execution error",
         blockedAt: new Date().toISOString(),
         resumeState: task.state as
           | "CREATED"
@@ -74,8 +81,8 @@ try {
     level: "error",
     event: "error",
     taskId,
-    errorCode: error instanceof OrchestratorError ? error.code : "RUNNER_UNHANDLED_ERROR",
-    message: error instanceof Error ? error.message : String(error),
+    errorCode: code,
+    message: "Task Runner stopped after an unhandled execution error",
     outcome: "fail",
   });
   process.exitCode = 1;

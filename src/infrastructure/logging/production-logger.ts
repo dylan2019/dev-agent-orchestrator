@@ -1,4 +1,3 @@
-import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -47,7 +46,6 @@ function redactMessage(value: string): string {
 
 export class ProductionLogger implements EventLogger {
   private readonly previousFile: string;
-  private lastEventHash: string | undefined;
 
   public constructor(
     private readonly file: string,
@@ -93,11 +91,6 @@ export class ProductionLogger implements EventLogger {
       ...(input.changedFiles !== undefined ? { changedFiles: input.changedFiles } : {}),
       ...(input.changedLines !== undefined ? { changedLines: input.changedLines } : {}),
     };
-    const comparable = { ...record, timestamp: undefined };
-    const hash = crypto.createHash("sha256").update(JSON.stringify(comparable)).digest("hex");
-    if (hash === this.lastEventHash) {
-      return false;
-    }
     const line = `${JSON.stringify(record)}\n`;
     const bytes = Buffer.byteLength(line, "utf8");
     if (bytes > Math.floor(this.maxBytes / 2)) {
@@ -109,7 +102,6 @@ export class ProductionLogger implements EventLogger {
     try {
       this.rotateIfRequired(bytes);
       fs.appendFileSync(this.file, line, { encoding: "utf8", mode: 0o600 });
-      this.lastEventHash = hash;
       return true;
     } catch (error) {
       throw wrapError("LOG_WRITE_FAILED", "Unable to write production log", error, {

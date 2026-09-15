@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import fs from "node:fs";
 import path from "node:path";
 
 import type { CandidateRepository } from "./ports/candidate-repository.js";
@@ -8,7 +9,7 @@ import type { GateDefinition, ProjectProfile } from "../configuration/schema.js"
 import { pathIsCovered } from "../domain/scope.js";
 import type { GateResult } from "../domain/types.js";
 import type { EventLogger } from "./ports/event-logger.js";
-import { OrchestratorError } from "../shared/errors.js";
+import { OrchestratorError, wrapError } from "../shared/errors.js";
 
 function isWithin(root: string, candidate: string): boolean {
   const relative = path.relative(path.resolve(root), path.resolve(candidate));
@@ -46,20 +47,23 @@ function gateFailureCode(stderr: string): string {
 function selectedGateOrder(
   gates: readonly GateDefinition[],
   changedFiles: readonly string[],
+  requiredGateIds: readonly string[] = [],
 ): readonly GateDefinition[] {
   const byId = new Map(gates.map((gate) => [gate.id, gate]));
   const selected = new Set(
-    gates
-      .filter(
-        (gate) =>
-          gate.paths === undefined ||
-          changedFiles.some(
-            (file) =>
-              pathIsCovered(file, gate.paths ?? []) ||
-              (gate.paths ?? []).some((gatePath) => pathIsCovered(gatePath, [file])),
-          ),
-      )
-      .map((gate) => gate.id),
+    requiredGateIds.length > 0
+      ? requiredGateIds
+      : gates
+          .filter(
+            (gate) =>
+              gate.paths === undefined ||
+              changedFiles.some(
+                (file) =>
+                  pathIsCovered(file, gate.paths ?? []) ||
+                  (gate.paths ?? []).some((gatePath) => pathIsCovered(gatePath, [file])),
+              ),
+          )
+          .map((gate) => gate.id),
   );
   const includeDependencies = (gateId: string): void => {
     const gate = byId.get(gateId);
@@ -80,9 +84,15 @@ function selectedGateOrder(
   }
   const ordered: GateDefinition[] = [];
   const visited = new Set<string>();
+  const visiting = new Set<string>();
   const visit = (gateId: string): void => {
     if (visited.has(gateId)) {
       return;
+    }
+    if (visiting.has(gateId)) {
+      throw new OrchestratorError("GATE_DEPENDENCY_CYCLE", "Gate dependency graph has a cycle", {
+        gateId,
+      });
     }
     const gate = byId.get(gateId);
     if (!gate) {
@@ -90,9 +100,11 @@ function selectedGateOrder(
         gateId,
       });
     }
+    visiting.add(gateId);
     for (const dependency of gate.dependsOn) {
       visit(dependency);
     }
+    visiting.delete(gateId);
     visited.add(gateId);
     ordered.push(gate);
   };
@@ -162,6 +174,19 @@ export class GateExecutor {
     project: ProjectProfile,
     worktreePath: string,
   ): Promise<GateResult> {
+    if (project.gates.acceptance.dependsOn.length > 0) {
+      const dependencies = selectedGateOrder(
+        project.gates.affected,
+        [],
+        project.gates.acceptance.dependsOn,
+      );
+      for (const gate of dependencies) {
+        const result = await this.runGate(taskId, project, worktreePath, gate, true);
+        if (result.status === "fail") {
+          return result;
+        }
+      }
+    }
     return await this.runGate(taskId, project, worktreePath, project.gates.acceptance, false);
   }
 
@@ -185,7 +210,17 @@ export class GateExecutor {
       }
     }
     const gateCwd = gate.cwd ? path.resolve(worktreePath, gate.cwd) : path.resolve(worktreePath);
-    if (!isWithin(worktreePath, gateCwd)) {
+    let canonicalRoot: string;
+    let canonicalCwd: string;
+    try {
+      canonicalRoot = fs.realpathSync.native(worktreePath);
+      canonicalCwd = fs.realpathSync.native(gateCwd);
+    } catch (error) {
+      throw wrapError("GATE_CWD_UNAVAILABLE", "Gate working directory cannot be resolved", error, {
+        gateId: gate.id,
+      });
+    }
+    if (!isWithin(worktreePath, gateCwd) || !isWithin(canonicalRoot, canonicalCwd)) {
       throw new OrchestratorError(
         "GATE_CWD_OUTSIDE_WORKTREE",
         "Gate cwd escaped Candidate Worktree",

@@ -89,6 +89,10 @@ The server intentionally exposes five tools:
 
 Worker execution, Gate scheduling, independent review, crash reconciliation, acceptance, commit creation, and ff-only integration are internal operations. Codex cannot reorder or skip them.
 
+While the MCP server is running, it periodically reconciles active Tasks without overlapping scans. A lost Runner moves its Task to `EXTERNAL_BLOCKED` without requiring an MCP restart. Controlled recovery reuses an unchanged approved Candidate for independent review; delivery resumes only when the Candidate and clean target base are both verified. A Worktree already committed, an uncertain delivery exception, or a changed target stays blocked for operator inspection rather than restarting implementation.
+
+A Reviewer CLI failure is an external runtime block, not a Candidate `FAIL` verdict. It preserves the approved Candidate for a controlled Reviewer retry instead of rerunning implementation.
+
 ## State flow
 
 ```text
@@ -113,6 +117,8 @@ Risk-specific routing and execution budgets are mandatory. Candidate size is rep
 ## Logging and privacy
 
 Default JSONL logs record only state changes, Worker counters, scope decisions, Candidate counts, Gate outcomes, review outcomes, delivery outcomes, and typed errors. Logs are size-bounded and rotated.
+
+Repeated key events remain visible; unchanged-state polling and raw Worker streams are not logged.
 
 Prompts, instruction contents, reasoning, thinking, assistant/token deltas, source bodies, patches, tool bodies, credentials, and raw stdout/stderr are never persisted by default. See [`docs/logging.md`](docs/logging.md).
 

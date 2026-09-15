@@ -632,17 +632,56 @@ export function blockExternally(task: TaskAggregate, block: ExternalBlock): Tran
   );
 }
 
-export function resumeExternalBlock(task: TaskAggregate, occurredAt: string): TransitionResult {
+export function resumeExternalBlock(
+  task: TaskAggregate,
+  input: {
+    readonly occurredAt: string;
+    readonly targetState: "REWORK_REQUIRED" | "INDEPENDENT_REVIEWING" | "ACCEPTING";
+    readonly verifiedCandidateFingerprint?: string;
+    readonly verifiedTargetHead?: string;
+  },
+): TransitionResult {
   requireState(task, ["EXTERNAL_BLOCKED"], "resume external block");
   const block = task.externalBlock;
   assertDomain(block !== undefined, "EXTERNAL_BLOCK_MISSING", "External block evidence is missing");
+  if (input.targetState !== "REWORK_REQUIRED") {
+    const candidate = task.candidate;
+    assertDomain(
+      block.resumeState === input.targetState &&
+        candidate !== undefined &&
+        input.verifiedCandidateFingerprint === candidate.fingerprint,
+      "UNSAFE_EXTERNAL_RESUME",
+      "Resume requires the unchanged Candidate and original stage",
+    );
+    if (input.targetState === "INDEPENDENT_REVIEWING") {
+      assertDomain(
+        task.controlReview?.decision === "approve" &&
+          task.controlReview.candidateFingerprint === candidate.fingerprint,
+        "UNSAFE_EXTERNAL_RESUME",
+        "Independent review can only resume after Candidate control approval",
+      );
+    } else {
+      assertDomain(
+        task.delivery?.status === "running" &&
+          task.delivery.candidateFingerprint === candidate.fingerprint &&
+          task.independentReview?.verdict === "pass" &&
+          task.independentReview.candidateFingerprint === candidate.fingerprint &&
+          input.verifiedTargetHead === candidate.baseCommit,
+        "DELIVERY_OUTCOME_UNKNOWN",
+        "Delivery cannot resume without an unchanged Candidate and target base",
+      );
+    }
+  }
   return transitioned(
     task,
-    "REWORK_REQUIRED",
-    occurredAt,
+    input.targetState,
+    input.occurredAt,
     "task.external_resumed",
-    { externalBlock: undefined, reworkReason: block.message },
-    { previousReason: block.reason },
+    {
+      externalBlock: undefined,
+      reworkReason: input.targetState === "REWORK_REQUIRED" ? block.message : undefined,
+    },
+    { previousReason: block.reason, resumedState: input.targetState },
   );
 }
 

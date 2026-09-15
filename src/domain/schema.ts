@@ -125,6 +125,8 @@ const ExternalBlockSchema = z
       "semantic_stall",
       "process_lost",
       "environment_unavailable",
+      "execution_timeout",
+      "runtime_fault",
     ]),
     message: z.string().min(1),
     blockedAt: TimestampSchema,

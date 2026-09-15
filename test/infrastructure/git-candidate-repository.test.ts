@@ -8,6 +8,7 @@ import test from "node:test";
 import type { ProjectProfile } from "../../src/configuration/schema.js";
 import { GitCandidateRepository } from "../../src/infrastructure/git/git-candidate-repository.js";
 import { LocalProcessRunner } from "../../src/infrastructure/process/local-process-runner.js";
+import { OrchestratorError } from "../../src/shared/errors.js";
 
 function gitCommand(): string {
   const lookup =
@@ -91,6 +92,27 @@ void test("Git Candidate repository preserves fingerprints, patches, approved tr
     assert.equal(patch.truncated, false);
     const filePatch = await candidates.getFilePatch(worktreePath, "untracked.txt", 10_000);
     assert.match(filePatch.patch, /new/);
+
+    const outside = path.join(temporary, "outside");
+    fs.mkdirSync(outside);
+    fs.writeFileSync(path.join(outside, "secret.txt"), "PRIVATE_EXTERNAL_CONTENT\n", "utf8");
+    const candidateWorktree = worktreePath;
+    assert.ok(candidateWorktree);
+    const linked = path.join(candidateWorktree, "linked");
+    fs.symlinkSync(outside, linked, process.platform === "win32" ? "junction" : "dir");
+    try {
+      await assert.rejects(
+        async () => await candidates.inspect(candidateWorktree),
+        (error: unknown) =>
+          error instanceof OrchestratorError && error.code === "CANDIDATE_PATH_OUTSIDE_WORKTREE",
+      );
+    } finally {
+      if (process.platform === "win32") {
+        fs.rmdirSync(linked);
+      } else {
+        fs.unlinkSync(linked);
+      }
+    }
 
     const prepared = await candidates.prepareCommit(
       worktreePath,

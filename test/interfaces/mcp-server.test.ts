@@ -10,6 +10,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { ConfigFileRepository } from "../../src/configuration/file-repository.js";
 import { CONFIG_VERSION, type OrchestratorConfig } from "../../src/configuration/schema.js";
 import { DEFAULT_BUDGETS } from "../../src/domain/budgets.js";
+import { startReconcileMonitor } from "../../src/interfaces/mcp/server.js";
 
 function config(temporary: string): OrchestratorConfig {
   const worker = {
@@ -107,4 +108,48 @@ void test("MCP exposes only the five public product tools", async () => {
     await client.close();
     fs.rmSync(temporary, { recursive: true, force: true });
   }
+});
+
+void test("reconcile monitor checks active Tasks repeatedly without overlapping scans", async () => {
+  let calls = 0;
+  let active = 0;
+  let maximumActive = 0;
+  let releaseFirst: (() => void) | undefined;
+  const failures: unknown[] = [];
+  const monitor = startReconcileMonitor(
+    async () => {
+      calls += 1;
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      if (calls === 1) {
+        await new Promise<void>((resolve) => {
+          releaseFirst = resolve;
+        });
+      }
+      active -= 1;
+      if (calls === 2) {
+        throw new Error("one reconcile scan failed");
+      }
+    },
+    (error) => failures.push(error),
+    10,
+  );
+  try {
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+    assert.equal(calls, 1);
+    assert.equal(maximumActive, 1);
+    releaseFirst?.();
+    const deadline = Date.now() + 500;
+    while ((() => calls)() < 3 && Date.now() < deadline) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    }
+    assert.ok((() => calls)() >= 3);
+    assert.equal(failures.length, 1);
+  } finally {
+    releaseFirst?.();
+    await monitor.stop();
+  }
+  const stoppedCalls = calls;
+  await new Promise<void>((resolve) => setTimeout(resolve, 30));
+  assert.equal(calls, stoppedCalls);
 });

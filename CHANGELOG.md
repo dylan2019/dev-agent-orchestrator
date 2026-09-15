@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Reconcile active Tasks periodically while MCP is connected, without overlapping scans or misclassifying a Worktree still being created; recover a lost Runner without a service restart.
+- Resume blocked independent review or delivery only when the approved Candidate and, for delivery, the clean original target base are verified; uncertain Git integration exceptions remain blocked instead of restarting implementation.
+- Reject filesystem-link escapes in Gate working directories and Candidate file inspection.
+- Detect Gate dependency cycles at execution time and honor declared acceptance dependencies.
+- Preserve repeated key log events and classify execution failures by exact typed error code, including a distinct `WORKER_RESULT_ERROR` for native CLI `ERROR` status, while keeping Reviewer CLI/schema faults separate from Candidate `FAIL` verdicts.
+- Allow a short-lived Worker to complete when it exits before process-identity registration.
+
 ## 1.0.0 - 2026-09-14
 
 ### Added

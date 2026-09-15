@@ -17,7 +17,7 @@ import type {
   ProjectGitState,
 } from "../../application/ports/candidate-repository.js";
 import type { ProcessRunner, ProcessRunResult } from "../../application/ports/process-runner.js";
-import { OrchestratorError } from "../../shared/errors.js";
+import { OrchestratorError, wrapError } from "../../shared/errors.js";
 
 const MAX_GIT_OUTPUT = 4_000_000;
 const MAX_CANDIDATE_FILES = 10_000;
@@ -42,6 +42,47 @@ function assertComplete(result: ProcessRunResult, operation: string): void {
     throw new OrchestratorError("GIT_OUTPUT_TRUNCATED", "Git output exceeded its safe limit", {
       operation,
     });
+  }
+}
+
+function lstatOrMissing(file: string): fs.Stats | undefined {
+  try {
+    return fs.lstatSync(file);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return undefined;
+    }
+    throw wrapError("CANDIDATE_FILE_PROBE_FAILED", "Unable to inspect Candidate file", error);
+  }
+}
+
+function canonicalWorktree(worktreePath: string): string {
+  try {
+    return fs.realpathSync.native(worktreePath);
+  } catch (error) {
+    throw wrapError(
+      "CANDIDATE_WORKTREE_UNAVAILABLE",
+      "Candidate Worktree cannot be resolved",
+      error,
+    );
+  }
+}
+
+function assertContainedRealPath(canonicalRoot: string, absolute: string, file: string): void {
+  let canonicalFile: string;
+  try {
+    canonicalFile = fs.realpathSync.native(absolute);
+  } catch (error) {
+    throw wrapError("CANDIDATE_PATH_UNRESOLVED", "Candidate path cannot be resolved", error, {
+      file,
+    });
+  }
+  if (!isWithin(canonicalRoot, canonicalFile)) {
+    throw new OrchestratorError(
+      "CANDIDATE_PATH_OUTSIDE_WORKTREE",
+      "Candidate path escaped Worktree through a filesystem link",
+      { file },
+    );
   }
 }
 
@@ -192,6 +233,7 @@ export class GitCandidateRepository implements CandidateRepository {
     const hash = crypto.createHash("sha256");
     hash.update("dev-agent-candidate-v1\0");
     hash.update(base.stdout.trim());
+    const canonicalRoot = canonicalWorktree(worktreePath);
     let totalBytes = 0;
     for (const file of changedFiles) {
       hash.update(`\0path:${file}\0`);
@@ -205,11 +247,13 @@ export class GitCandidateRepository implements CandidateRepository {
           },
         );
       }
-      if (!fs.existsSync(absolute)) {
+      if (!lstatOrMissing(absolute)) {
         hash.update("deleted");
         continue;
       }
+      assertContainedRealPath(canonicalRoot, absolute, file);
       totalBytes += await hashFile(hash, absolute);
+      assertContainedRealPath(canonicalRoot, absolute, file);
       if (totalBytes > MAX_TOTAL_BYTES) {
         throw new OrchestratorError(
           "CANDIDATE_TOTAL_SIZE_LIMIT",
@@ -230,7 +274,8 @@ export class GitCandidateRepository implements CandidateRepository {
       }, 0);
     for (const file of untrackedFiles) {
       const absolute = path.resolve(worktreePath, file);
-      if (fs.existsSync(absolute)) {
+      if (lstatOrMissing(absolute)) {
+        assertContainedRealPath(canonicalRoot, absolute, file);
         changedLines += await countFileLines(absolute);
       }
     }
@@ -288,13 +333,16 @@ export class GitCandidateRepository implements CandidateRepository {
     hash.update("dev-agent-gate-input-v1\0");
     hash.update(inspection.baseCommit);
     hash.update(`\0selectors:${selectors?.join("\0") ?? "all"}\0`);
+    const canonicalRoot = canonicalWorktree(worktreePath);
     for (const file of files) {
       hash.update(`path:${file}\0`);
       const absolute = path.resolve(worktreePath, file);
-      if (!fs.existsSync(absolute)) {
+      if (!lstatOrMissing(absolute)) {
         hash.update("deleted\0");
       } else {
+        assertContainedRealPath(canonicalRoot, absolute, file);
         await hashFile(hash, absolute);
+        assertContainedRealPath(canonicalRoot, absolute, file);
       }
     }
     return hash.digest("hex");
